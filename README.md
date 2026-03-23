@@ -8,7 +8,7 @@ It includes:
 - world files and helper scripts for generating layouts and bridge configurations
 - the generated `uwb_bridge.yaml` bridge configuration
 
-This repository is intentionally **not** a standalone ROS 2 package. It is an asset / tooling repository, and `COLCON_IGNORE` is kept on purpose.
+This repository is **does not contain** a standalone ROS 2 package. It contains simulation tools, but can be integrated in a ROS 2 workspace via `COLCON_IGNORE`.
 
 ## Repository layout
 
@@ -50,13 +50,7 @@ The plugin computes an effective blocked thickness for each anchor-tag line of s
 - body-shadow contribution is ignored below the LOS thickness threshold
 - body-shadow contribution is capped so it cannot exceed the Soft-NLOS thickness ceiling by itself
 
-The NLOS model uses:
-
-- distance-based severity as the baseline
-- thickness-based severity as the extra degradation term
-- a configurable Hard-NLOS slope increase relative to Soft NLOS
-
-This lets the user tune:
+The NLOS model lets the user tune:
 
 - LOS / Soft NLOS / Hard NLOS / blackout boundaries
 - dropout range and standard-deviation range
