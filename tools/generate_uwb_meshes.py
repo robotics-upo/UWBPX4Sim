@@ -150,7 +150,7 @@ def main() -> None:
         "--uwb-root",
         type=Path,
         default=Path(__file__).resolve().parents[1],
-        help="Path to uwb_gz_simulation directory (default: script's parent).",
+        help="Path to UWBPX4Sim directory (default: script's parent).",
     )
     args = parser.parse_args()
 

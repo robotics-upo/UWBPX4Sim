@@ -14,7 +14,7 @@ Layout input must be JSON with:
 }
 
 Also regenerates bridge configs for:
-  - uwb_gz_simulation/uwb_bridge.yaml
+  - UWBPX4Sim/uwb_bridge.yaml
   - px4_sim_offboard/config/uwb_bridge.yaml (if package directory exists)
 """
 
@@ -363,7 +363,7 @@ def main() -> None:
         "--uwb-root",
         type=Path,
         default=Path(__file__).resolve().parents[1],
-        help="Path to uwb_gz_simulation directory (default: script's parent).",
+        help="Path to UWBPX4Sim directory (default: script's parent).",
     )
     parser.add_argument(
         "--skip-bridge",
