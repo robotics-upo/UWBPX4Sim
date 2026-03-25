@@ -1,6 +1,7 @@
 #include "UWBGazeboSystem.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <utility>
@@ -93,6 +94,24 @@ constexpr double kOrderingEpsilon = 1e-6;
       return _baseTopic + _pairId;
 
     return _baseTopic + "/" + _pairId;
+  }
+
+  bool extractSensorId(const std::string &_linkName,
+                       const std::string &_prefix,
+                       std::string &_sensorId)
+  {
+    const std::string prefixWithSeparator = _prefix + "_";
+    if (_linkName.rfind(prefixWithSeparator, 0) != 0)
+      return false;
+
+    _sensorId = _linkName.substr(prefixWithSeparator.size());
+    if (_sensorId.empty())
+      return false;
+
+    return std::all_of(
+        _sensorId.begin(),
+        _sensorId.end(),
+        [](const unsigned char c) { return std::isdigit(c) != 0; });
   }
 }  // namespace
 
@@ -571,6 +590,8 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 	std::vector<std::pair<std::string, gz::sim::Entity>> anchors;
 	std::vector<gz::sim::Entity> obstacleLinks;
 	std::vector<gz::sim::Entity> bodyShadowLinks;
+	std::unordered_map<std::string, std::string> seenTagIds;
+	std::unordered_map<std::string, std::string> seenAnchorIds;
 
 	// Find all tag and anchor links
 	ecm.Each<gz::sim::components::Name, gz::sim::components::Link>(
@@ -589,11 +610,57 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 
 		// Check for uwb_tag_* in x500_* models
 		if (modelName.rfind(modelTagPrefix_, 0) == 0 && linkBaseName.rfind(tagPrefix_, 0) == 0)
-		tags.emplace_back(linkBaseName, linkEntity);
+		{
+			std::string tagId;
+			if (!extractSensorId(linkBaseName, tagPrefix_, tagId))
+			{
+				gzerr << "[UWBGazeboSystem] Invalid tag link name '" << linkBaseName
+				      << "' in model '" << modelName << "'. Expected format '"
+				      << tagPrefix_ << "_<global_id>'. Skipping.\n";
+			}
+			else
+			{
+				const std::string fullName = modelName + "::" + linkBaseName;
+				auto [it, inserted] = seenTagIds.emplace(tagId, fullName);
+				if (!inserted)
+				{
+					gzerr << "[UWBGazeboSystem] Duplicate global tag id t" << tagId
+					      << " detected in '" << fullName << "' and '" << it->second
+					      << "'. Tag ids must be globally unique across all UAVs. Skipping duplicate.\n";
+				}
+				else
+				{
+					tags.emplace_back(linkBaseName, linkEntity);
+				}
+			}
+		}
 
 		// Check for uwb_anchor_* in r1_rover_* models
 		if (modelName.rfind(modelAnchorPrefix_, 0) == 0 && linkBaseName.rfind(anchorPrefix_, 0) == 0)
-		anchors.emplace_back(linkBaseName, linkEntity);
+		{
+			std::string anchorId;
+			if (!extractSensorId(linkBaseName, anchorPrefix_, anchorId))
+			{
+				gzerr << "[UWBGazeboSystem] Invalid anchor link name '" << linkBaseName
+				      << "' in model '" << modelName << "'. Expected format '"
+				      << anchorPrefix_ << "_<global_id>'. Skipping.\n";
+			}
+			else
+			{
+				const std::string fullName = modelName + "::" + linkBaseName;
+				auto [it, inserted] = seenAnchorIds.emplace(anchorId, fullName);
+				if (!inserted)
+				{
+					gzerr << "[UWBGazeboSystem] Duplicate global anchor id a" << anchorId
+					      << " detected in '" << fullName << "' and '" << it->second
+					      << "'. Anchor ids must be globally unique across all UGVs. Skipping duplicate.\n";
+				}
+				else
+				{
+					anchors.emplace_back(linkBaseName, linkEntity);
+				}
+			}
+		}
 
 		// For wall-induced NLOS, consider only static map obstacles.
 		const bool isTagModel = (modelName.rfind(modelTagPrefix_, 0) == 0);

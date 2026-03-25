@@ -14,7 +14,8 @@ This repository is **does not contain** a standalone ROS 2 package. It contains 
 
 ## Repository layout
 
-- `models/`: modified PX4 Gazebo models with mounted UWB devices
+- `models/base_models/`: template UAV and UGV models used as the generation inputs
+- `models/custom_models/`: generated per-robot UAV and UGV models
 - `uwb_gazebo_plugin/`: custom Gazebo system plugin source
 - `worlds/`: Gazebo worlds used in the experiments
 - `tools/`: helper scripts for sensor layout and mesh generation
@@ -69,26 +70,68 @@ From the repository root:
 python3 tools/configure_uwb_layout.py --layout uwb_layout.example.json
 ```
 
-This updates:
+This generates:
 
-- `models/r1_rover/model.sdf`
-- `models/x500_base/model.sdf`
+- one rover model per UGV, under `models/custom_models/r1_rover_<id>/`
+- one UAV model per UAV, under `models/custom_models/x500_<id>/`
 - `uwb_bridge.yaml`
 - `../mr-radio-localization/px4_sim_offboard/config/uwb_bridge.yaml` if the parent workspace layout exists
 
-The layout JSON contains:
+The layout JSON is structured robot-by-robot. For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
 
 ```json
 {
-  "anchors": [[x, y, z], ...],
-  "tags": [[x, y, z], ...]
+  "uavs": [
+    {
+      "id": 0,
+      "tags": [
+        { "id": 1, "position": [-0.24, -0.24, -0.06] },
+        { "id": 2, "position": [0.24, 0.24, -0.06] }
+      ]
+    },
+    {
+      "id": 1,
+      "tags": [
+        { "id": 3, "position": [-0.24, -0.24, -0.06] },
+        { "id": 4, "position": [0.24, 0.24, -0.06] }
+      ]
+    }
+  ],
+  "ugvs": [
+    {
+      "id": 0,
+      "anchors": [
+        { "id": 1, "position": [-0.32, 0.3, 0.875] },
+        { "id": 2, "position": [0.32, -0.3, 0.875] },
+        { "id": 3, "position": [0.32, 0.3, 0.33] },
+        { "id": 4, "position": [-0.32, -0.3, 0.33] }
+      ]
+    },
+    {
+      "id": 1,
+      "anchors": [
+        { "id": 5, "position": [-0.32, 0.3, 0.875] },
+        { "id": 6, "position": [0.32, -0.3, 0.875] },
+        { "id": 7, "position": [0.32, 0.3, 0.33] },
+        { "id": 8, "position": [-0.32, -0.3, 0.33] }
+      ]
+    }
+  ]
 }
 ```
 
-Ordering defines the published IDs and topics:
+Rules:
 
-- `anchors[0] -> a1`, `anchors[1] -> a2`, ...
-- `tags[0] -> t1`, `tags[1] -> t2`, ...
+- UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...).
+- Anchor ids are globally unique across all UGVs.
+- Tag ids are globally unique across all UAVs.
+- Pair topics remain `aItJ`, so `a1t2` is globally unique by construction.
+
+The repository also includes this exact test layout as:
+
+```text
+uwb_layout.two_vehicle_example.json
+```
 
 ## Generating simplified anchor/tag meshes
 
@@ -100,7 +143,7 @@ This regenerates the STL meshes used for the mounted UWB devices in the models.
 
 ## Using the plugin in PX4 SITL
 
-1. Copy the contents of `models/` into:
+1. Copy the generated model folders from `models/custom_models/` into:
 
 ```text
 <PX4-Autopilot>/Tools/simulation/gz/models/
