@@ -7,38 +7,28 @@ This script updates:
   - models/custom_models/r1_rover_<ugv_id>/model.sdf + model.config
   - ROS2/px4_sim_offboard/config/uwb_bridge.yaml
 
-Layout input supports the multi-robot schema:
-{
-  "uavs": [
-    {
-      "id": 0,
-      "tags": [
-        {"id": 1, "position": [x, y, z]},
-        ...
-      ]
-    },
-    ...
-  ],
-  "ugvs": [
-    {
-      "id": 0,
-      "anchors": [
-        {"id": 1, "position": [x, y, z]},
-        ...
-      ]
-    },
-    ...
-  ]
-}
+Layout input supports the multi-robot YAML schema:
+uavs:
+  - id: 0
+    spawn_pose: [x, y, z, roll, pitch, yaw]
+    tags:
+      - {id: 1, position: [x, y, z]}
+      - ...
+ugvs:
+  - id: 0
+    spawn_pose: [x, y, z, roll, pitch, yaw]
+    anchors:
+      - {id: 1, position: [x, y, z]}
+      - ...
 
 Global tag and anchor ids must be unique. Pair topics remain globally unique as
 `aItJ`, where `I` is the unique anchor id and `J` is the unique tag id.
 
 Legacy layouts are still accepted:
-{
-  "anchors": [[x, y, z], ...],
-  "tags": [[x, y, z], ...]
-}
+anchors:
+  - [x, y, z]
+tags:
+  - [x, y, z]
 
 Legacy layouts are interpreted as a single `ugv_id = 0` and `uav_id = 0`, with
 anchor/tag ids assigned sequentially from 1.
@@ -47,13 +37,13 @@ anchor/tag ids assigned sequentially from 1.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
+import yaml
 
 
 BASE_MODELS_DIRNAME = "base_models"
@@ -67,8 +57,19 @@ class SensorPlacement:
 
 
 @dataclass(frozen=True)
+class SpawnPose:
+    x: float
+    y: float
+    z: float
+    roll: float
+    pitch: float
+    yaw: float
+
+
+@dataclass(frozen=True)
 class VehicleLayout:
     id: int
+    spawn_pose: SpawnPose
     sensors: List[SensorPlacement]
 
 
@@ -104,6 +105,41 @@ class BlockBounds:
     indent_step: str
 
 
+def iter_spawn_vehicles(layout: UwbLayout):
+    uavs = {vehicle.id: vehicle for vehicle in layout.uavs}
+    ugvs = {vehicle.id: vehicle for vehicle in layout.ugvs}
+
+    for vehicle_id in sorted(set(uavs) | set(ugvs)):
+        if vehicle_id in uavs:
+            yield "uav", uavs[vehicle_id]
+        if vehicle_id in ugvs:
+            yield "ugv", ugvs[vehicle_id]
+
+
+def format_spawn_line(vehicle_type: str, vehicle: VehicleLayout) -> str:
+    if vehicle_type == "uav":
+        model_name = f"x500_{vehicle.id}"
+        autostart = "4001"
+    else:
+        model_name = f"r1_rover_{vehicle.id}"
+        autostart = "4009"
+
+    pose = vehicle.spawn_pose
+    values = (
+        vehicle_type,
+        str(vehicle.id),
+        model_name,
+        autostart,
+        f"{pose.x:g}",
+        f"{pose.y:g}",
+        f"{pose.z:g}",
+        f"{pose.roll:g}",
+        f"{pose.pitch:g}",
+        f"{pose.yaw:g}",
+    )
+    return "\t".join(values)
+
+
 def _to_int(value: object, field_name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be an integer, not a boolean.")
@@ -126,6 +162,43 @@ def _to_xyz(raw: object, field_name: str) -> Tuple[float, float, float]:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} contains non-numeric values.") from exc
     return (x, y, z)
+
+
+def _to_float(value: object, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be numeric, not a boolean.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric.") from exc
+
+
+def _parse_spawn_pose(raw_pose: object, field_name: str) -> SpawnPose:
+    if raw_pose is None:
+        return SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    if isinstance(raw_pose, (list, tuple)):
+        if len(raw_pose) != 6:
+            raise ValueError(f"{field_name} must be a 6-element array [x,y,z,roll,pitch,yaw].")
+        return SpawnPose(
+            x=_to_float(raw_pose[0], f"{field_name}[0]"),
+            y=_to_float(raw_pose[1], f"{field_name}[1]"),
+            z=_to_float(raw_pose[2], f"{field_name}[2]"),
+            roll=_to_float(raw_pose[3], f"{field_name}[3]"),
+            pitch=_to_float(raw_pose[4], f"{field_name}[4]"),
+            yaw=_to_float(raw_pose[5], f"{field_name}[5]"),
+        )
+    if isinstance(raw_pose, dict):
+        return SpawnPose(
+            x=_to_float(raw_pose.get("x", 0.0), f"{field_name}.x"),
+            y=_to_float(raw_pose.get("y", 0.0), f"{field_name}.y"),
+            z=_to_float(raw_pose.get("z", 0.0), f"{field_name}.z"),
+            roll=_to_float(raw_pose.get("roll", 0.0), f"{field_name}.roll"),
+            pitch=_to_float(raw_pose.get("pitch", 0.0), f"{field_name}.pitch"),
+            yaw=_to_float(raw_pose.get("yaw", 0.0), f"{field_name}.yaw"),
+        )
+    raise ValueError(
+        f"{field_name} must be a 6-element array [x,y,z,roll,pitch,yaw]."
+    )
 
 
 def _parse_sensor_entries(
@@ -181,7 +254,9 @@ def _parse_vehicle_layouts(
     for idx, raw_vehicle in enumerate(raw_vehicles):
         entry_name = f"{field_name}[{idx}]"
         if not isinstance(raw_vehicle, dict):
-            raise ValueError(f"{entry_name} must be an object with 'id' and '{sensor_field}'.")
+            raise ValueError(
+                f"{entry_name} must be an object with 'id', optional 'spawn_pose', and '{sensor_field}'."
+            )
 
         if "id" not in raw_vehicle:
             raise ValueError(f"{entry_name} must include 'id'.")
@@ -197,7 +272,13 @@ def _parse_vehicle_layouts(
             sensor_label=sensor_label,
             global_seen_ids=global_seen_sensor_ids,
         )
-        vehicles.append(VehicleLayout(id=vehicle_id, sensors=sensors))
+        vehicles.append(
+            VehicleLayout(
+                id=vehicle_id,
+                spawn_pose=_parse_spawn_pose(raw_vehicle.get("spawn_pose"), f"{entry_name}.spawn_pose"),
+                sensors=sensors,
+            )
+        )
 
     vehicles.sort(key=lambda vehicle: vehicle.id)
     return vehicles
@@ -207,7 +288,7 @@ def _load_legacy_layout(data: dict) -> UwbLayout:
     anchors_raw = data.get("anchors")
     tags_raw = data.get("tags")
     if anchors_raw is None or tags_raw is None:
-        raise ValueError("Layout JSON must include either 'uavs'/'ugvs' or legacy 'anchors'/'tags'.")
+        raise ValueError("Layout file must include either 'uavs'/'ugvs' or legacy 'anchors'/'tags'.")
     if not isinstance(anchors_raw, list) or not isinstance(tags_raw, list):
         raise ValueError("Legacy 'anchors' and 'tags' fields must be lists.")
 
@@ -221,15 +302,15 @@ def _load_legacy_layout(data: dict) -> UwbLayout:
     ]
 
     return UwbLayout(
-        uavs=[VehicleLayout(id=0, sensors=tags)],
-        ugvs=[VehicleLayout(id=0, sensors=anchors)],
+        uavs=[VehicleLayout(id=0, spawn_pose=SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), sensors=tags)],
+        ugvs=[VehicleLayout(id=0, spawn_pose=SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), sensors=anchors)],
     )
 
 
 def load_layout(layout_path: Path) -> UwbLayout:
-    data = json.loads(layout_path.read_text(encoding="utf-8"))
+    data = yaml.safe_load(layout_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("Layout JSON must be an object.")
+        raise ValueError("Layout file must be a mapping/object.")
 
     if "uavs" in data or "ugvs" in data:
         if "uavs" not in data or "ugvs" not in data:
@@ -615,10 +696,15 @@ def _format_generated_model_paths(model_dirs: Iterable[Path]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Configure UWB layouts and generate per-robot Gazebo models.")
     parser.add_argument(
+        "--emit-spawn-layout",
+        action="store_true",
+        help="Print tab-separated spawn information instead of generating models and bridge files.",
+    )
+    parser.add_argument(
         "--layout",
         required=True,
         type=Path,
-        help="Path to layout JSON file. Supports multi-robot and legacy schemas.",
+        help="Path to layout YAML file. Supports multi-robot and legacy schemas.",
     )
     parser.add_argument(
         "--uwb-root",
@@ -634,6 +720,12 @@ def main() -> None:
     args = parser.parse_args()
 
     layout = load_layout(args.layout)
+
+    if args.emit_spawn_layout:
+        for vehicle_type, vehicle in iter_spawn_vehicles(layout):
+            print(format_spawn_line(vehicle_type, vehicle))
+        return
+
     uwb_root = args.uwb_root.resolve()
 
     models_dir = uwb_root / "models"

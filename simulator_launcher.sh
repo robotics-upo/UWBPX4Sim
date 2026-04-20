@@ -31,38 +31,8 @@ DEFAULT_ROS_WS="$(detect_default_ros_ws)"
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 ROS_WS="${ROS_WS:-$DEFAULT_ROS_WS}"
 GZ_WORLD="${GZ_WORLD:-default}"
-
-# UAV initial pose parameters (x, y, z, roll, pitch, yaw)
-UAV_X="${UAV_X:-3.0}"
-UAV_Y="${UAV_Y:-0.0}"
-UAV_Z="${UAV_Z:-0.0}"
-UAV_ROLL="${UAV_ROLL:-0}"
-UAV_PITCH="${UAV_PITCH:-0}"
-UAV_YAW="${UAV_YAW:-1.57079632679}"
-
-# Rover initial pose parameters (x, y, z, roll, pitch, yaw)
-ROVER_X="${ROVER_X:-0.0}"
-ROVER_Y="${ROVER_Y:-0.0}"
-ROVER_Z="${ROVER_Z:-0.0}"
-ROVER_ROLL="${ROVER_ROLL:-0}"
-ROVER_PITCH="${ROVER_PITCH:-0}"
-ROVER_YAW="${ROVER_YAW:-1.57079632679}"
-
-# Second UAV initial pose parameters (x, y, z, roll, pitch, yaw)
-UAV2_X="${UAV2_X:-3.0}"
-UAV2_Y="${UAV2_Y:--5.0}"
-UAV2_Z="${UAV2_Z:-0.0}"
-UAV2_ROLL="${UAV2_ROLL:-0}"
-UAV2_PITCH="${UAV2_PITCH:-0}"
-UAV2_YAW="${UAV2_YAW:-1.57079632679}"
-
-# Second rover initial pose parameters (x, y, z, roll, pitch, yaw)
-ROVER2_X="${ROVER2_X:-0.0}"
-ROVER2_Y="${ROVER2_Y:--5.0}"
-ROVER2_Z="${ROVER2_Z:-0.0}"
-ROVER2_ROLL="${ROVER2_ROLL:-0}"
-ROVER2_PITCH="${ROVER2_PITCH:-0}"
-ROVER2_YAW="${ROVER2_YAW:-1.57079632679}"
+UWB_LAYOUT_FILE="${UWB_LAYOUT_FILE:-${UWB_LAYOUT_JSON:-$SCRIPT_DIR/config/uwb_layout.four_vehicle_example.yaml}}"
+LAYOUT_TOOL="$SCRIPT_DIR/tools/configure_uwb_layout.py"
 
 LAUNCH_LOCALIZATION=0
 RECORD_BAG=0
@@ -74,11 +44,9 @@ Usage: $(basename "$0") [--localization] [--bag]
 Options:
   --localization  Launch uwb_localization together with the simulator.
   --bag           Start ros2 bag recording in tmux pane 1.3.
+  (env) UWB_LAYOUT_FILE  Layout YAML with per-robot spawn_pose and sensor placement (default: config/uwb_layout.four_vehicle_example.yaml)
+  (env) UWB_LAYOUT_JSON  Legacy alias for UWB_LAYOUT_FILE
   (env) GZ_WORLD  Gazebo world name from PX4 Tools/simulation/gz/worlds (default: default)
-  (env) UAV_*     UAV initial pose fields: UAV_X, UAV_Y, UAV_Z, UAV_ROLL, UAV_PITCH, UAV_YAW
-  (env) ROVER_*   Rover initial pose fields: ROVER_X, ROVER_Y, ROVER_Z, ROVER_ROLL, ROVER_PITCH, ROVER_YAW
-  (env) UAV2_*    Second UAV initial pose fields
-  (env) ROVER2_*  Second rover initial pose fields
   -h, --help           Show this help message.
 EOF
 }
@@ -156,8 +124,13 @@ fi
 
 require_directory "$ROS_WS"
 require_directory "$PX4_DIR"
+if [[ ! -f "$UWB_LAYOUT_FILE" ]]; then
+  echo "[ERROR] Layout YAML not found: $UWB_LAYOUT_FILE" >&2
+  exit 1
+fi
 require_command tmux
 require_command MicroXRCEAgent
+require_command python3
 
 if [[ -f "$ROS_WS/install/setup.bash" ]]; then
   ROS_SHELL="bash"
@@ -177,11 +150,23 @@ if [[ ! -x "$PX4_BIN" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$LAYOUT_TOOL" ]]; then
+  echo "[ERROR] Layout tool not found: $LAYOUT_TOOL" >&2
+  exit 1
+fi
+
+mapfile -t SPAWN_SPECS < <(python3 "$LAYOUT_TOOL" --layout "$UWB_LAYOUT_FILE" --emit-spawn-layout)
+if (( ${#SPAWN_SPECS[@]} == 0 )); then
+  echo "[ERROR] No vehicles found in layout: $UWB_LAYOUT_FILE" >&2
+  exit 1
+fi
+
 PX4_GZ_MODELS_DIR="$PX4_DIR/Tools/simulation/gz/models"
-for model_name in x500_0 x500_1 r1_rover_0 r1_rover_1; do
+for spec in "${SPAWN_SPECS[@]}"; do
+  IFS=$'\t' read -r _vehicle_type _vehicle_id model_name _autostart _x _y _z _roll _pitch _yaw <<< "$spec"
   if [[ ! -d "$PX4_GZ_MODELS_DIR/$model_name" ]]; then
     echo "[ERROR] Missing generated Gazebo model: $PX4_GZ_MODELS_DIR/$model_name" >&2
-    echo "[ERROR] Copy x500_0, x500_1, r1_rover_0, and r1_rover_1 from UWBPX4Sim_repo/models/custom_models into PX4 first." >&2
+    echo "[ERROR] Copy the generated models from UWBPX4Sim_repo/models/custom_models into PX4 first." >&2
     exit 1
   fi
 done
@@ -202,21 +187,15 @@ fi
 graceful_shutdown() {
   echo "[CLEANUP] Graceful shutdown…"
 
-  # 1) Stop ros2 bag cleanly (send Ctrl-C to pane 1.3)
   if tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "[CLEANUP] Stopping ros2 bag…"
-    tmux send-keys -t $SESSION:1.3 C-c 2>/dev/null || true
-    # 2) Stop your other ROS nodes cleanly (optional)
-    tmux send-keys -t $SESSION:1.2 C-c 2>/dev/null || true  # uwb_localization
-    tmux send-keys -t $SESSION:0.4 C-c 2>/dev/null || true  # x500_1
-    tmux send-keys -t $SESSION:0.5 C-c 2>/dev/null || true  # r1_rover_1
-    sleep 10
+    while IFS= read -r pane_id; do
+      tmux send-keys -t "$pane_id" C-c 2>/dev/null || true
+    done < <(tmux list-panes -a -t "$SESSION" -F "#{session_name}:#{window_index}.#{pane_index}")
+    sleep 5
 
-    # 3) Now kill simulators last
     echo "[CLEANUP] Killing simulators…"
     killall -9 gzserver gzclient ruby 2>/dev/null || true
 
-    # 4) Finally, kill the tmux session
     tmux kill-session -t "$SESSION" 2>/dev/null || true
   fi
 }
@@ -228,13 +207,10 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # Start new tmux session
 tmux new-session -d -s $SESSION
-
-tmux split-window -h -t $SESSION:0.0         
-tmux split-window -h -t $SESSION:0.1         
-
-tmux split-window -v -t $SESSION:0.0         
-tmux split-window -v -t $SESSION:0.1        
-tmux split-window -v -t $SESSION:0.2         
+TOTAL_MAIN_PANES=$((2 + ${#SPAWN_SPECS[@]}))
+for ((pane_idx = 1; pane_idx < TOTAL_MAIN_PANES; pane_idx++)); do
+  tmux split-window -t $SESSION:0
+done
 
 tmux select-layout -t $SESSION:0 tiled
 
@@ -242,14 +218,25 @@ tmux select-layout -t $SESSION:0 tiled
 tmux send-keys -t $SESSION:0.0 "chmod +x \"$QGC_PATH\" && \"$QGC_PATH\"" C-m
 # Set up Micro XRCE-DDS Agent
 tmux send-keys -t $SESSION:0.1 "MicroXRCEAgent udp4 -p 8888" C-m
-# UAV 0
-tmux send-keys -t $SESSION:0.2 "sleep 2 && cd \"$PX4_DIR\" && PX4_GZ_MODEL_POSE='${UAV_X},${UAV_Y},${UAV_Z},${UAV_ROLL},${UAV_PITCH},${UAV_YAW}' PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500_0 PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i 1" C-m
-# Rover 0
-tmux send-keys -t $SESSION:0.3 "sleep 4 && cd \"$PX4_DIR\" && PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE='${ROVER_X},${ROVER_Y},${ROVER_Z},${ROVER_ROLL},${ROVER_PITCH},${ROVER_YAW}' PX4_SYS_AUTOSTART=4009 PX4_SIM_MODEL=gz_r1_rover_0 PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i 2" C-m
-# UAV 1
-tmux send-keys -t $SESSION:0.4 "sleep 6 && cd \"$PX4_DIR\" && PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE='${UAV2_X},${UAV2_Y},${UAV2_Z},${UAV2_ROLL},${UAV2_PITCH},${UAV2_YAW}' PX4_SYS_AUTOSTART=4001 PX4_SIM_MODEL=gz_x500_1 PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i 3" C-m
-# Rover 1
-tmux send-keys -t $SESSION:0.5 "sleep 8 && cd \"$PX4_DIR\" && PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE='${ROVER2_X},${ROVER2_Y},${ROVER2_Z},${ROVER2_ROLL},${ROVER2_PITCH},${ROVER2_YAW}' PX4_SYS_AUTOSTART=4009 PX4_SIM_MODEL=gz_r1_rover_1 PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i 4" C-m
+SPAWNED_MODELS=()
+vehicle_idx=0
+for spec in "${SPAWN_SPECS[@]}"; do
+  IFS=$'\t' read -r vehicle_type vehicle_id model_name autostart x y z roll pitch yaw <<< "$spec"
+  pane_index=$((2 + vehicle_idx))
+  instance_index=$((1 + vehicle_idx))
+  sleep_delay=$((2 + vehicle_idx * 2))
+  pose_csv="${x},${y},${z},${roll},${pitch},${yaw}"
+  SPAWNED_MODELS+=("$model_name")
+
+  if (( vehicle_idx == 0 )); then
+    spawn_cmd="sleep $sleep_delay && cd \"$PX4_DIR\" && PX4_GZ_MODEL_POSE='$pose_csv' PX4_SYS_AUTOSTART=$autostart PX4_SIM_MODEL=gz_$model_name PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i $instance_index"
+  else
+    spawn_cmd="sleep $sleep_delay && cd \"$PX4_DIR\" && PX4_GZ_STANDALONE=1 PX4_GZ_MODEL_POSE='$pose_csv' PX4_SYS_AUTOSTART=$autostart PX4_SIM_MODEL=gz_$model_name PX4_GZ_WORLD=${GZ_WORLD} \"$PX4_BIN\" -i $instance_index"
+  fi
+
+  tmux send-keys -t $SESSION:0.$pane_index "$spawn_cmd" C-m
+  vehicle_idx=$((vehicle_idx + 1))
+done
 
 # Offboard / ROS-side block kept here for later reactivation.
 # The four-vehicle spawn test above intentionally does not run it yet.
@@ -325,7 +312,8 @@ tmux new-window -t $SESSION:1 -n bridge
 tmux split-window -h -t $SESSION:1.0
 tmux select-layout -t $SESSION:1 tiled
 tmux send-keys -t $SESSION:1.0 "$(build_ros_shell_command "sleep 12 && cd \"$ROS_WS\" && ros2 launch px4_sim_offboard uwb_bridge_launch.py")" C-m
-tmux send-keys -t $SESSION:1.1 "echo '[INFO] Four-vehicle UWB spawn test launcher.' && echo '[INFO] Spawned models: x500_0, r1_rover_0, x500_1, r1_rover_1.' && echo '[INFO] Direct ROS topics should appear under /uwb_gz_simulator/distances/aItJ and /uwb_gz_simulator/distances_ground_truth/aItJ.' && echo '[INFO] /eliko/Distances is still not expected here because agv_offboard_control remains disabled.'" C-m
+spawned_models_str="${SPAWNED_MODELS[*]}"
+tmux send-keys -t $SESSION:1.1 "echo '[INFO] UWB spawn test launcher.' && echo '[INFO] Layout file: $UWB_LAYOUT_FILE' && echo '[INFO] Spawned models: $spawned_models_str' && echo '[INFO] Direct ROS topics should appear under /uwb_gz_simulator/distances/aItJ and /uwb_gz_simulator/distances_ground_truth/aItJ.' && echo '[INFO] /eliko/Distances is still not expected here because agv_offboard_control remains disabled.'" C-m
 
 
 # Attach

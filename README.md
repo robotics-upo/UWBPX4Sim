@@ -19,11 +19,12 @@ It includes:
 - `ROS2/`: ROS 2 assets directory
 - `ROS2/px4_sim_offboard/`: ROS 2 package for the PX4/Gazebo bridge and offboard-side nodes
 - `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`: generated GZ-to-ROS 2 bridge topics for all anchor-tag pairs
+- `config/`: layout YAML files used for model generation and simulator spawning
 - `simulator_launcher.sh`: tmux-based PX4 SITL launcher
 - `uwb_gazebo_plugin/`: custom Gazebo system plugin source
 - `worlds/`: Gazebo worlds used in the experiments
 - `tools/`: helper scripts for sensor layout and mesh generation
-- `uwb_layout.example.json`: example anchor / tag layout description
+- `config/uwb_layout.example.yaml`: example anchor / tag layout description
 
 ![](images/SimDiagram.png)
 
@@ -70,7 +71,7 @@ The NLOS model lets the user tune:
 From the repository root:
 
 ```bash
-python3 tools/configure_uwb_layout.py --layout uwb_layout.example.json
+python3 tools/configure_uwb_layout.py --layout config/uwb_layout.example.yaml
 ```
 
 This generates:
@@ -79,52 +80,56 @@ This generates:
 - one UAV model per UAV, under `models/custom_models/x500_<id>/`
 - `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
 
-The layout JSON is structured robot-by-robot. For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
+The layout YAML is structured robot-by-robot. Each vehicle entry can also include a `spawn_pose` 6-vector in world coordinates `[x, y, z, roll, pitch, yaw]`, which is used by the simulator launcher when spawning the robots. For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
 
-```json
-{
-  "uavs": [
-    {
-      "id": 0,
-      "tags": [
-        { "id": 1, "position": [-0.24, -0.24, -0.06] },
-        { "id": 2, "position": [0.24, 0.24, -0.06] }
-      ]
-    },
-    {
-      "id": 1,
-      "tags": [
-        { "id": 3, "position": [-0.24, -0.24, -0.06] },
-        { "id": 4, "position": [0.24, 0.24, -0.06] }
-      ]
-    }
-  ],
-  "ugvs": [
-    {
-      "id": 0,
-      "anchors": [
-        { "id": 1, "position": [-0.32, 0.3, 0.875] },
-        { "id": 2, "position": [0.32, -0.3, 0.875] },
-        { "id": 3, "position": [0.32, 0.3, 0.33] },
-        { "id": 4, "position": [-0.32, -0.3, 0.33] }
-      ]
-    },
-    {
-      "id": 1,
-      "anchors": [
-        { "id": 5, "position": [-0.32, 0.3, 0.875] },
-        { "id": 6, "position": [0.32, -0.3, 0.875] },
-        { "id": 7, "position": [0.32, 0.3, 0.33] },
-        { "id": 8, "position": [-0.32, -0.3, 0.33] }
-      ]
-    }
-  ]
-}
+```yaml
+uavs:
+  - id: 0
+    spawn_pose: [3.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    tags:
+      - id: 1
+        position: [-0.24, -0.24, -0.06]
+      - id: 2
+        position: [0.24, 0.24, -0.06]
+
+  - id: 1
+    spawn_pose: [3.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    tags:
+      - id: 3
+        position: [-0.24, -0.24, -0.06]
+      - id: 4
+        position: [0.24, 0.24, -0.06]
+
+ugvs:
+  - id: 0
+    spawn_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    anchors:
+      - id: 1
+        position: [-0.32, 0.3, 0.875]
+      - id: 2
+        position: [0.32, -0.3, 0.875]
+      - id: 3
+        position: [0.32, 0.3, 0.33]
+      - id: 4
+        position: [-0.32, -0.3, 0.33]
+
+  - id: 1
+    spawn_pose: [0.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    anchors:
+      - id: 5
+        position: [-0.32, 0.3, 0.875]
+      - id: 6
+        position: [0.32, -0.3, 0.875]
+      - id: 7
+        position: [0.32, 0.3, 0.33]
+      - id: 8
+        position: [-0.32, -0.3, 0.33]
 ```
 
 Rules:
 
 - UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...).
+- `spawn_pose` is expressed as `[x, y, z, roll, pitch, yaw]` in world coordinates and is used by `simulator_launcher.sh`.
 - Anchor ids are globally unique across all UGVs.
 - Tag ids are globally unique across all UAVs.
 - Pair topics remain `aItJ`, so `a1t2` is globally unique by construction.
@@ -132,7 +137,7 @@ Rules:
 The repository also includes this exact test layout as:
 
 ```text
-uwb_layout.four_vehicle_example.json
+config/uwb_layout.four_vehicle_example.yaml
 ```
 
 ## Generating simplified anchor/tag meshes
@@ -168,6 +173,21 @@ After that, ROS 2 should be able to discover:
 - `px4_sim_offboard`
 - `ros2 launch px4_sim_offboard offboard_launch.py`
 - `ros2 launch px4_sim_offboard uwb_bridge_launch.py`
+
+## Spawning from the layout YAML
+
+`simulator_launcher.sh` reads the same layout YAML used for model generation and takes each robot `spawn_pose` from there. By default it uses:
+
+```text
+config/uwb_layout.four_vehicle_example.yaml
+```
+
+You can point it to a different layout file with:
+
+```bash
+export UWB_LAYOUT_FILE=/path/to/your_layout.yaml
+./simulator_launcher.sh
+```
 
 ## Using the plugin in PX4 SITL
 
