@@ -5,7 +5,7 @@
 This script updates:
   - models/custom_models/x500_<uav_id>/model.sdf + model.config
   - models/custom_models/r1_rover_<ugv_id>/model.sdf + model.config
-  - uwb_bridge.yaml
+  - ROS2/px4_sim_offboard/config/uwb_bridge.yaml
 
 Layout input supports the multi-robot schema:
 {
@@ -596,10 +596,7 @@ def generate_bridge_yaml(layout: UwbLayout) -> str:
 
 
 def _find_offboard_bridge_targets(uwb_root: Path) -> List[Path]:
-    candidates = [
-        uwb_root.parent / "px4_sim_offboard" / "config" / "uwb_bridge.yaml",
-        uwb_root.parent / "mr-radio-localization" / "px4_sim_offboard" / "config" / "uwb_bridge.yaml",
-    ]
+    candidates = [uwb_root / "ROS2" / "px4_sim_offboard" / "config" / "uwb_bridge.yaml"]
     targets: List[Path] = []
     seen: set[Path] = set()
     for candidate in candidates:
@@ -632,7 +629,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-bridge",
         action="store_true",
-        help="Do not regenerate uwb_bridge.yaml.",
+        help="Do not regenerate the GZ-to-ROS2 bridge YAML files.",
     )
     args = parser.parse_args()
 
@@ -644,13 +641,13 @@ def main() -> None:
     custom_models_dir = models_dir / CUSTOM_MODELS_DIRNAME
     uav_template_dir = base_models_dir / "x500_base"
     ugv_template_dir = base_models_dir / "r1_rover"
-    bridge_yaml = uwb_root / "uwb_bridge.yaml"
+    bridge_yaml = uwb_root / "ROS2" / "px4_sim_offboard" / "config" / "uwb_bridge.yaml"
 
     for path in (uav_template_dir, ugv_template_dir, uav_template_dir / "model.sdf", ugv_template_dir / "model.sdf"):
         if not path.exists():
             raise FileNotFoundError(f"Required template path not found: {path}")
-    if not args.skip_bridge and not bridge_yaml.exists():
-        raise FileNotFoundError(f"Bridge config file not found: {bridge_yaml}")
+    if not args.skip_bridge and not bridge_yaml.parent.exists():
+        raise FileNotFoundError(f"Bridge config directory not found: {bridge_yaml.parent}")
 
     custom_models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -695,10 +692,15 @@ def main() -> None:
         bridge_text = generate_bridge_yaml(layout)
         bridge_yaml.write_text(bridge_text, encoding="utf-8")
         bridge_targets.append(bridge_yaml)
+        seen_bridge_targets = {bridge_yaml.resolve()}
 
         for offboard_bridge_yaml in _find_offboard_bridge_targets(uwb_root):
+            resolved_target = offboard_bridge_yaml.resolve()
+            if resolved_target in seen_bridge_targets:
+                continue
             offboard_bridge_yaml.write_text(bridge_text, encoding="utf-8")
             bridge_targets.append(offboard_bridge_yaml)
+            seen_bridge_targets.add(resolved_target)
 
     print(
         "Updated UWB layout:\n"

@@ -7,19 +7,22 @@ It includes:
 
 - modified Gazebo models for the `x500` UAV and the `r1_rover` UGV with onboard UWB tags / anchors
 - the custom Gazebo system plugin `UWBGazeboPlugin`
+- the `ROS2/px4_sim_offboard` ROS 2 package used to bridge Gazebo/PX4 topics and run the control-side nodes
+- the `simulator_launcher.sh` tmux launcher used for PX4 SITL sessions
 - world files and helper scripts for generating layouts and bridge configurations
-- the generated `uwb_bridge.yaml` bridge configuration
-
-This repository is **does not contain** a standalone ROS 2 package. It contains simulation tools, but can be integrated in a ROS 2 workspace via `COLCON_IGNORE`.
+- the generated `ROS2/px4_sim_offboard/config/uwb_bridge.yaml` GZ-to-ROS 2 bridge configuration
 
 ## Repository layout
 
 - `models/base_models/`: template UAV and UGV models used as the generation inputs
 - `models/custom_models/`: generated per-robot UAV and UGV models
+- `ROS2/`: ROS 2 assets directory
+- `ROS2/px4_sim_offboard/`: ROS 2 package for the PX4/Gazebo bridge and offboard-side nodes
+- `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`: generated GZ-to-ROS 2 bridge topics for all anchor-tag pairs
+- `simulator_launcher.sh`: tmux-based PX4 SITL launcher
 - `uwb_gazebo_plugin/`: custom Gazebo system plugin source
 - `worlds/`: Gazebo worlds used in the experiments
 - `tools/`: helper scripts for sensor layout and mesh generation
-- `uwb_bridge.yaml`: Gazebo-to-ROS bridge topics for all anchor-tag pairs
 - `uwb_layout.example.json`: example anchor / tag layout description
 
 ![](images/SimDiagram.png)
@@ -74,8 +77,7 @@ This generates:
 
 - one rover model per UGV, under `models/custom_models/r1_rover_<id>/`
 - one UAV model per UAV, under `models/custom_models/x500_<id>/`
-- `uwb_bridge.yaml`
-- `../mr-radio-localization/px4_sim_offboard/config/uwb_bridge.yaml` if the parent workspace layout exists
+- `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
 
 The layout JSON is structured robot-by-robot. For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
 
@@ -140,6 +142,32 @@ python3 tools/generate_uwb_meshes.py
 ```
 
 This regenerates the STL meshes used for the mounted UWB devices in the models.
+
+## ROS 2 workspace note
+
+The `ROS2/` folder contains both:
+
+- `ROS2/px4_sim_offboard/`: the ROS 2 package
+- `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`: the bridge configuration generated from the current layout
+
+`px4_sim_offboard` must be present in your ROS 2 workspace and built before you launch the ROS-side nodes. If you clone the full `UWBPX4Sim` repository into your workspace `src/` directory, `colcon` will find `ROS2/px4_sim_offboard` automatically.
+
+Example:
+
+```bash
+cd <ros_ws>/src
+git clone https://github.com/amartinezsilva/UWBPX4Sim.git
+
+cd <ros_ws>
+colcon build --packages-select px4_sim_offboard
+source install/setup.bash
+```
+
+After that, ROS 2 should be able to discover:
+
+- `px4_sim_offboard`
+- `ros2 launch px4_sim_offboard offboard_launch.py`
+- `ros2 launch px4_sim_offboard uwb_bridge_launch.py`
 
 ## Using the plugin in PX4 SITL
 
