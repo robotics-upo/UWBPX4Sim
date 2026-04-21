@@ -1,6 +1,12 @@
 uavs:
   - id: 0
     spawn_pose: [3.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_uav.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.5
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     tags:
       - id: 1
         position: [-0.24, -0.24, -0.06]
@@ -9,6 +15,12 @@ uavs:
 
   - id: 1
     spawn_pose: [3.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_uav.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.5
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     tags:
       - id: 3
         position: [-0.24, -0.24, -0.06]
@@ -18,6 +30,12 @@ uavs:
 ugvs:
   - id: 0
     spawn_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_agv.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.52
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     anchors:
       - id: 1
         position: [-0.32, 0.3, 0.875]
@@ -30,6 +48,12 @@ ugvs:
 
   - id: 1
     spawn_pose: [0.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_agv.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.52
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     anchors:
       - id: 5
         position: [-0.32, 0.3, 0.875]

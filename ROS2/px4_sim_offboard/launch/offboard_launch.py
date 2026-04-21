@@ -1,43 +1,82 @@
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-import os
 
-def generate_launch_description():
 
-    uav_config_file = os.path.join(
-        get_package_share_directory('px4_sim_offboard'),
-        'config',
-        'uav_offboard_params.yaml'
-    )
+LAYOUT_FILE_ENV = "UWB_LAYOUT_FILE"
+LAYOUT_TOOL_RELATIVE = ("tools", "configure_uwb_layout.py")
 
-    agv_config_file = os.path.join(
-        get_package_share_directory('px4_sim_offboard'),
-        'config',
-        'agv_offboard_params.yaml'
-    )
 
-    return LaunchDescription([
-        Node(
-            package='px4_sim_offboard',
-            executable='uav_offboard_control',
-            name='uav_offboard_control',
-            output='screen',
-            parameters=[uav_config_file]
-        ),
-
-        Node(
-            package='px4_sim_offboard',
-            executable='agv_offboard_control',
-            name='agv_offboard_control',
-            output='screen',
-            parameters=[agv_config_file]
-        ),
-
-       Node(
-        package='uwb_simulator',
-        executable='clock_publisher',
-        name='clock_publisher'
+def _layout_file() -> Path:
+    layout_file = os.environ.get(LAYOUT_FILE_ENV)
+    if not layout_file:
+        raise RuntimeError(
+            f"{LAYOUT_FILE_ENV} is not set. Point it to the master layout YAML before launching offboard nodes."
         )
 
-    ])
+    path = Path(layout_file)
+    if not path.exists():
+        raise RuntimeError(f"Layout YAML not found: {path}")
+    return path.resolve()
+
+
+def _uwb_root(layout_file: Path) -> Path:
+    if layout_file.parent.name != "config":
+        raise RuntimeError(
+            f"Expected layout YAML to live under a config/ directory, got: {layout_file}"
+        )
+    return layout_file.parent.parent
+
+
+def _layout_tool_module(layout_file: Path):
+    uwb_root = _uwb_root(layout_file)
+    tool_path = uwb_root.joinpath(*LAYOUT_TOOL_RELATIVE)
+    if not tool_path.exists():
+        raise RuntimeError(f"Layout tool not found: {tool_path}")
+
+    spec = importlib.util.spec_from_file_location("uwb_layout_tool", tool_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load layout tool module from {tool_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def generate_launch_description():
+    layout_file = _layout_file()
+    layout_tool = _layout_tool_module(layout_file)
+    layout = layout_tool.load_layout(layout_file)
+    node_entries = layout_tool.build_offboard_launch_entries(layout)
+
+    if not node_entries:
+        raise RuntimeError(
+            f"No offboard node entries could be derived from {layout_file}."
+        )
+
+    actions = []
+    for node_name, executable, ros_params in node_entries:
+        actions.append(
+            Node(
+                package='px4_sim_offboard',
+                executable=executable,
+                name=node_name,
+                output='screen',
+                parameters=[ros_params],
+            )
+        )
+
+    actions.append(
+        Node(
+            package='px4_sim_offboard',
+            executable='clock_publisher',
+            name='clock_publisher',
+        )
+    )
+
+    return LaunchDescription(actions)

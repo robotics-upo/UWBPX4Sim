@@ -24,7 +24,6 @@ It includes:
 - `uwb_gazebo_plugin/`: custom Gazebo system plugin source
 - `worlds/`: Gazebo worlds used in the experiments
 - `tools/`: helper scripts for sensor layout and mesh generation
-- `config/uwb_layout.example.yaml`: example anchor / tag layout description
 
 ![](images/SimDiagram.png)
 
@@ -80,12 +79,35 @@ This generates:
 - one UAV model per UAV, under `models/custom_models/x500_<id>/`
 - `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
 
-The layout YAML is structured robot-by-robot. Each vehicle entry can also include a `spawn_pose` 6-vector in world coordinates `[x, y, z, roll, pitch, yaw]`, which is used by the simulator launcher when spawning the robots. For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
+You normally run this step when:
+
+- creating a layout for the first time
+- changing sensor placement / robot membership in the layout
+- wanting to resync the generated bridge and model assets from the layout
+
+The layout YAML is structured robot-by-robot. Each vehicle entry contains:
+
+- `spawn_pose`: a 6-vector `[x, y, z, roll, pitch, yaw]` in world coordinates
+- `offboard`: the ROS/offboard parameters for that specific robot
+- `tags` or `anchors`: the sensor placement relative to the robot body
+
+This same YAML is used both:
+
+- by `configure_uwb_layout.py` to generate models and the bridge config
+- by `offboard_launch.py` to derive the ROS 2 node parameters at launch time
+
+For example, the following four-robot layout assigns the same per-vehicle sensor geometry to two UAVs and two UGVs, while keeping anchor and tag ids globally unique:
 
 ```yaml
 uavs:
   - id: 0
     spawn_pose: [3.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_uav.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.5
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     tags:
       - id: 1
         position: [-0.24, -0.24, -0.06]
@@ -94,6 +116,12 @@ uavs:
 
   - id: 1
     spawn_pose: [3.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_uav.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.5
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     tags:
       - id: 3
         position: [-0.24, -0.24, -0.06]
@@ -103,6 +131,12 @@ uavs:
 ugvs:
   - id: 0
     spawn_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_agv.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.52
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     anchors:
       - id: 1
         position: [-0.32, 0.3, 0.875]
@@ -115,6 +149,12 @@ ugvs:
 
   - id: 1
     spawn_pose: [0.0, -5.0, 0.0, 0.0, 0.0, 1.57079632679]
+    offboard:
+      trajectory_csv_file: trajectory_lemniscate_agv.csv
+      lookahead_distance: 2.0
+      cruise_speed: 0.52
+      odom_error_position: 0.0
+      odom_error_angle: 0.0
     anchors:
       - id: 5
         position: [-0.32, 0.3, 0.875]
@@ -130,6 +170,7 @@ Rules:
 
 - UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...).
 - `spawn_pose` is expressed as `[x, y, z, roll, pitch, yaw]` in world coordinates and is used by `simulator_launcher.sh`.
+- `offboard` is per-robot. There is no shared offboard-defaults block.
 - Anchor ids are globally unique across all UGVs.
 - Tag ids are globally unique across all UAVs.
 - Pair topics remain `aItJ`, so `a1t2` is globally unique by construction.
@@ -176,7 +217,7 @@ After that, ROS 2 should be able to discover:
 
 ## Spawning from the layout YAML
 
-`simulator_launcher.sh` reads the same layout YAML used for model generation and takes each robot `spawn_pose` from there. By default it uses:
+`simulator_launcher.sh` reads the same layout YAML for robot spawn poses, and the ROS 2 offboard launch reads that same file again to derive the node parameters. The launcher does not generate models or the bridge config for you. That preparation step must still be done manually before launching. By default it uses:
 
 ```text
 config/uwb_layout.four_vehicle_example.yaml
@@ -188,6 +229,17 @@ You can point it to a different layout file with:
 export UWB_LAYOUT_FILE=/path/to/your_layout.yaml
 ./simulator_launcher.sh
 ```
+
+Before running the launcher, generate the required models and bridge config manually:
+
+```bash
+python3 tools/configure_uwb_layout.py --layout config/uwb_layout.example.yaml
+```
+
+When the launcher starts the ROS 2 side, it launches:
+
+- `uwb_bridge_launch.py` using `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
+- `offboard_launch.py` using `UWB_LAYOUT_FILE` directly
 
 ## Using the plugin in PX4 SITL
 

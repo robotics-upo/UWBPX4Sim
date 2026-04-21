@@ -24,11 +24,13 @@
 #include <rclcpp/rclcpp.hpp>
 #include <fstream>
 #include <sstream>
+#include <map>
 #include <vector>
 #include <array>
 #include <mutex>
 #include <cmath>
 #include <limits>
+#include <algorithm>
 #include <cctype>
 #include <stdexcept>
 
@@ -50,6 +52,70 @@ static inline double wrapPi(double a) {
     while (a >  M_PI) a -= 2.0*M_PI;
     while (a < -M_PI) a += 2.0*M_PI;
     return a;
+}
+
+static std::vector<std::string> sensorKeysFromIds(
+    const std::vector<std::string> &ids,
+    const std::string &prefix)
+{
+    std::vector<std::string> keys;
+    keys.reserve(ids.size());
+
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const auto &raw_id = ids[i];
+        if (raw_id.empty()) {
+            continue;
+        }
+
+        const bool is_numeric = std::all_of(
+            raw_id.begin(),
+            raw_id.end(),
+            [](unsigned char c) { return std::isdigit(c) != 0; });
+
+        if (is_numeric) {
+            keys.push_back(prefix + raw_id);
+            continue;
+        }
+
+        if (raw_id.size() > prefix.size() &&
+            raw_id.rfind(prefix, 0) == 0 &&
+            std::all_of(raw_id.begin() + prefix.size(), raw_id.end(),
+                        [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            keys.push_back(raw_id);
+            continue;
+        }
+
+        keys.push_back(prefix + std::to_string(i + 1));
+    }
+
+    return keys;
+}
+
+static std::vector<std::string> directSensorKeysFromPrefixes(
+    const std::vector<std::string> &prefixes,
+    const std::string &ns_prefix,
+    const std::string &sensor_prefix)
+{
+    std::vector<std::string> keys;
+    const std::string prefix = ns_prefix + ".";
+    for (const auto &entry : prefixes) {
+        if (entry.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const std::string sensor_id = entry.substr(prefix.size());
+        const bool is_numeric = std::all_of(
+            sensor_id.begin(),
+            sensor_id.end(),
+            [](unsigned char c) { return std::isdigit(c) != 0; });
+        if (!is_numeric) {
+            continue;
+        }
+        keys.push_back(sensor_prefix + sensor_id);
+    }
+
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
 }
 
 class AGVOffboardControl : public rclcpp::Node
@@ -85,6 +151,11 @@ private:
     std::string vehicle_local_position_topic_;
     std::string ros_odometry_topic_, ros_gt_topic_;
     std::string traj_file_;
+    std::string frame_prefix_{"agv"};
+    std::string marker_array_topic_{"/agv/gt_marker_array"};
+    std::string distances_list_topic_{"eliko/Distances"};
+    std::string world_frame_id_{"map"};
+    uint8_t vehicle_target_system_ = 3;
     
     double lookahead_distance_, cruise_speed_;
     double odom_error_position_ = 0.0; // %,  meters for every 100 meters traveled
@@ -167,32 +238,11 @@ private:
 
 };
 
-AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
+AGVOffboardControl::AGVOffboardControl()
+    : Node(
+        "agv_offboard_control",
+        rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true))
 {
-    //Declare parameters
-    this->declare_parameter<std::string>("offboard_control_mode_topic", "/px4_2/fmu/in/offboard_control_mode");
-    this->declare_parameter<std::string>("trajectory_setpoint_topic", "/px4_2/fmu/in/trajectory_setpoint");
-    this->declare_parameter<std::string>("vehicle_command_topic", "/px4_2/fmu/in/vehicle_command");
-    this->declare_parameter<std::string>("vehicle_odometry_topic", "/px4_2/fmu/out/vehicle_odometry");
-    this->declare_parameter<std::string>("vehicle_local_position_topic", "/px4_2/fmu/out/vehicle_local_position");
-
-    this->declare_parameter<std::string>("trajectory_csv_file", "trajectory_lemniscate_agv.csv");
-    this->declare_parameter<std::string>("ros_odometry_topic", "/agv/odom");
-    this->declare_parameter<std::string>("ros_gt_topic", "/agv/gt");
-
-    this->declare_parameter<double>("odom_error_position", 0.0);
-    this->declare_parameter<double>("odom_error_angle", 0.0);
-
-    this->declare_parameter<double>("lookahead_distance", 2.0);
-    this->declare_parameter<double>("cruise_speed", 0.5);
-
-    this->declare_parameter<std::vector<double>>("agv_origin", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
-
-    // Dynamic anchor/tag IDs (required)
-    this->declare_parameter<std::vector<std::string>>("anchors.ids", std::vector<std::string>{});
-    this->declare_parameter<std::vector<std::string>>("tags.ids", std::vector<std::string>{});
-
-
     // Load parameters
     this->get_parameter("offboard_control_mode_topic", offboard_control_mode_topic_);
     this->get_parameter("trajectory_setpoint_topic", trajectory_setpoint_topic_);
@@ -202,6 +252,13 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
     this->get_parameter("trajectory_csv_file", traj_file_);
     this->get_parameter("ros_odometry_topic", ros_odometry_topic_);
     this->get_parameter("ros_gt_topic", ros_gt_topic_);
+    int vehicle_target_system = 3;
+    this->get_parameter("vehicle_target_system", vehicle_target_system);
+    vehicle_target_system_ = static_cast<uint8_t>(vehicle_target_system);
+    this->get_parameter("frame_prefix", frame_prefix_);
+    this->get_parameter("marker_array_topic", marker_array_topic_);
+    this->get_parameter("distances_list_topic", distances_list_topic_);
+    this->get_parameter("world_frame_id", world_frame_id_);
 
     this->get_parameter("odom_error_position", odom_error_position_);
     this->get_parameter("odom_error_angle", odom_error_angle_);
@@ -236,13 +293,19 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
 			}
 
 
-    const bool loaded_dynamic_anchors = loadSensorIdsFromArrayParam("anchors.ids", "a", anchor_ids_, anchor_keys_);
     const bool loaded_dynamic_tags = loadSensorIdsFromArrayParam("tags.ids", "t", tag_ids_, tag_keys_);
 
-    if (!loaded_dynamic_anchors || !loaded_dynamic_tags) {
+    const auto listed = this->list_parameters({"anchors"}, 10);
+    anchor_keys_ = directSensorKeysFromPrefixes(listed.prefixes, "anchors", "a");
+    anchor_ids_.clear();
+    for (const auto &anchor_key : anchor_keys_) {
+        anchor_ids_[anchor_key] = anchor_key.size() > 1 ? anchor_key.substr(1) : anchor_key;
+    }
+
+    if (anchor_keys_.empty() || !loaded_dynamic_tags) {
         RCLCPP_FATAL(
             this->get_logger(),
-            "Invalid UWB config. Required params: anchors.ids and tags.ids.");
+            "Invalid UWB config. Required params: anchors and tags.ids.");
         throw std::runtime_error("Missing required dynamic anchor/tag ID parameters.");
     }
 
@@ -277,9 +340,9 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
 
     ros_odometry_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>(ros_odometry_topic_, 10);
     ros_gt_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(ros_gt_topic_, 10);
-    distances_list_pub_ = this->create_publisher<eliko_messages::msg::DistancesList>("eliko/Distances", 10);
+    distances_list_pub_ = this->create_publisher<eliko_messages::msg::DistancesList>(distances_list_topic_, 10);
 
-    marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("agv/gt_marker_array", 10);
+    marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(marker_array_topic_, 10);
 
     start_time_ = this->get_clock()->now();
 
@@ -287,14 +350,16 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
     static_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(this);
    
     // Publish static transforms for anchors (relative to agv/base_link)
-    for (const auto& anchor : {"a1", "a2", "a3", "a4"}) {
+    for (const auto& anchor : anchor_keys_) {
         std::vector<double> anchor_pos;
-        std::string param_name = "anchors." + std::string(anchor) + ".position";
-        if (this->get_parameter(param_name, anchor_pos) && anchor_pos.size() == 3) {
+        const std::string anchor_numeric = anchor.size() > 1 ? anchor.substr(1) : anchor;
+        const std::string compact_param = "anchors." + anchor_numeric + ".position";
+        const bool loaded = this->get_parameter(compact_param, anchor_pos) && anchor_pos.size() == 3;
+        if (loaded) {
             geometry_msgs::msg::TransformStamped tf;
             tf.header.stamp = this->get_clock()->now();
-            tf.header.frame_id = "agv/base_link";
-            tf.child_frame_id = "agv/" + std::string(anchor);
+            tf.header.frame_id = frame_prefix_ + "/base_link";
+            tf.child_frame_id = frame_prefix_ + "/" + anchor;
             tf.transform.translation.x = anchor_pos[0];
             tf.transform.translation.y = anchor_pos[1];
             tf.transform.translation.z = anchor_pos[2];
@@ -413,8 +478,8 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
         nav_msgs::msg::Odometry odom_msg;
         odom_msg.header.stamp = this->get_clock()->now();
 
-        odom_msg.header.frame_id = "agv/odom";
-        odom_msg.child_frame_id  = "agv/base_link";
+        odom_msg.header.frame_id = frame_prefix_ + "/odom";
+        odom_msg.child_frame_id  = frame_prefix_ + "/base_link";
 
         // DRIFTED position
         odom_msg.pose.pose.position.x = pos_noisy_enu_.x();
@@ -536,7 +601,7 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
             // Publish PoseStamped (gt)
             geometry_msgs::msg::PoseStamped pose_msg;
             pose_msg.header.stamp = this->get_clock()->now();
-            pose_msg.header.frame_id = "map";
+            pose_msg.header.frame_id = world_frame_id_;
             pose_msg.pose.position.x = pos_enu_world.x();
             pose_msg.pose.position.y = pos_enu_world.y();
             pose_msg.pose.position.z = pos_enu_world.z();
@@ -548,8 +613,8 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
 
             geometry_msgs::msg::TransformStamped tf_msg;
             tf_msg.header.stamp = pose_msg.header.stamp;
-            tf_msg.header.frame_id = "map";
-            tf_msg.child_frame_id = "agv/base_link";
+            tf_msg.header.frame_id = world_frame_id_;
+            tf_msg.child_frame_id = frame_prefix_ + "/base_link";
             tf_msg.transform.translation.x = pos_enu_world.x();
             tf_msg.transform.translation.y = pos_enu_world.y();
             tf_msg.transform.translation.z = pos_enu_world.z();
@@ -565,7 +630,7 @@ AGVOffboardControl::AGVOffboardControl() : Node("agv_offboard_control")
             for (size_t i = 0; i < gt_pose_history_.size(); ++i) {
                 visualization_msgs::msg::Marker marker;
                 marker.header = pose_msg.header;
-                marker.ns = "agv_gt";
+                marker.ns = frame_prefix_ + "_gt";
                 marker.id = i;
                 marker.type = visualization_msgs::msg::Marker::SPHERE;
                 marker.action = visualization_msgs::msg::Marker::ADD;
@@ -615,12 +680,17 @@ bool AGVOffboardControl::loadSensorIdsFromArrayParam(
 
     out_map.clear();
     out_keys.clear();
+    const auto keys = sensorKeysFromIds(ids, prefix);
+    size_t key_index = 0;
     for (size_t i = 0; i < ids.size(); ++i) {
         if (ids[i].empty()) {
             RCLCPP_WARN(this->get_logger(), "Ignoring empty ID in '%s' at index %zu.", param_name.c_str(), i);
             continue;
         }
-        const std::string key = prefix + std::to_string(i + 1);
+        if (key_index >= keys.size()) {
+            continue;
+        }
+        const std::string &key = keys[key_index++];
         out_map[key] = ids[i];
         out_keys.push_back(key);
     }
@@ -854,7 +924,7 @@ void AGVOffboardControl::publish_vehicle_command(uint16_t command, float param1,
     msg.param1 = param1;
     msg.param2 = param2;
     msg.command = command;
-    msg.target_system = 3; // PX4 instance 2 = MAV_SYS_ID 3
+    msg.target_system = vehicle_target_system_;
     msg.target_component = 1;
     msg.source_system = 1;
     msg.source_component = 1;
@@ -868,7 +938,7 @@ void AGVOffboardControl::publish_distances()
 {
     eliko_messages::msg::DistancesList list_msg;
     list_msg.header.stamp = this->get_clock()->now();
-    list_msg.header.frame_id = "arco/eliko";
+    list_msg.header.frame_id = frame_prefix_ + "/eliko";
 
     {
         std::lock_guard<std::mutex> lock(uwb_mutex_);

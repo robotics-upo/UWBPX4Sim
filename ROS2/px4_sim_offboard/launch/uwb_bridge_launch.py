@@ -1,15 +1,22 @@
+import os
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-import os
+
+
+BRIDGE_CONFIG_ENV = "PX4_SIM_OFFBOARD_BRIDGE_CONFIG"
 
 
 def generate_launch_description():
-    uwb_bridge_config = os.path.join(
-        get_package_share_directory('px4_sim_offboard'),
-        'config',
-        'uwb_bridge.yaml'
-    )
+    uwb_bridge_config = os.environ.get(BRIDGE_CONFIG_ENV)
+    if not uwb_bridge_config:
+        uwb_bridge_config = str(
+            Path(get_package_share_directory('px4_sim_offboard'))
+            / 'config'
+            / 'uwb_bridge.yaml'
+        )
 
     return LaunchDescription([
         Node(

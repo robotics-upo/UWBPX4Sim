@@ -11,27 +11,20 @@ Layout input supports the multi-robot YAML schema:
 uavs:
   - id: 0
     spawn_pose: [x, y, z, roll, pitch, yaw]
+    offboard: {... per-vehicle ROS/offboard parameters ...}
     tags:
       - {id: 1, position: [x, y, z]}
       - ...
 ugvs:
   - id: 0
     spawn_pose: [x, y, z, roll, pitch, yaw]
+    offboard: {... per-vehicle ROS/offboard parameters ...}
     anchors:
       - {id: 1, position: [x, y, z]}
       - ...
 
 Global tag and anchor ids must be unique. Pair topics remain globally unique as
 `aItJ`, where `I` is the unique anchor id and `J` is the unique tag id.
-
-Legacy layouts are still accepted:
-anchors:
-  - [x, y, z]
-tags:
-  - [x, y, z]
-
-Legacy layouts are interpreted as a single `ugv_id = 0` and `uav_id = 0`, with
-anchor/tag ids assigned sequentially from 1.
 """
 
 from __future__ import annotations
@@ -42,7 +35,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 import yaml
 
 
@@ -71,6 +64,7 @@ class VehicleLayout:
     id: int
     spawn_pose: SpawnPose
     sensors: List[SensorPlacement]
+    offboard: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -105,6 +99,16 @@ class BlockBounds:
     indent_step: str
 
 
+@dataclass(frozen=True)
+class SpawnAssignment:
+    vehicle_type: str
+    vehicle: VehicleLayout
+    model_name: str
+    autostart: int
+    instance_index: int
+    target_system: int
+
+
 def iter_spawn_vehicles(layout: UwbLayout):
     uavs = {vehicle.id: vehicle for vehicle in layout.uavs}
     ugvs = {vehicle.id: vehicle for vehicle in layout.ugvs}
@@ -116,20 +120,35 @@ def iter_spawn_vehicles(layout: UwbLayout):
             yield "ugv", ugvs[vehicle_id]
 
 
-def format_spawn_line(vehicle_type: str, vehicle: VehicleLayout) -> str:
-    if vehicle_type == "uav":
-        model_name = f"x500_{vehicle.id}"
-        autostart = "4001"
-    else:
-        model_name = f"r1_rover_{vehicle.id}"
-        autostart = "4009"
+def iter_spawn_assignments(layout: UwbLayout) -> Iterable[SpawnAssignment]:
+    for instance_index, (vehicle_type, vehicle) in enumerate(iter_spawn_vehicles(layout), start=1):
+        if vehicle_type == "uav":
+            model_name = f"x500_{vehicle.id}"
+            autostart = 4001
+        else:
+            model_name = f"r1_rover_{vehicle.id}"
+            autostart = 4009
+
+        yield SpawnAssignment(
+            vehicle_type=vehicle_type,
+            vehicle=vehicle,
+            model_name=model_name,
+            autostart=autostart,
+            instance_index=instance_index,
+            target_system=instance_index + 1,
+        )
+
+
+def format_spawn_line(assignment: SpawnAssignment) -> str:
+    vehicle = assignment.vehicle
 
     pose = vehicle.spawn_pose
     values = (
-        vehicle_type,
+        assignment.vehicle_type,
         str(vehicle.id),
-        model_name,
-        autostart,
+        assignment.model_name,
+        str(assignment.autostart),
+        str(assignment.instance_index),
         f"{pose.x:g}",
         f"{pose.y:g}",
         f"{pose.z:g}",
@@ -173,6 +192,14 @@ def _to_float(value: object, field_name: str) -> float:
         raise ValueError(f"{field_name} must be numeric.") from exc
 
 
+def _to_mapping(raw: object, field_name: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{field_name} must be a mapping/object.")
+    return dict(raw)
+
+
 def _parse_spawn_pose(raw_pose: object, field_name: str) -> SpawnPose:
     if raw_pose is None:
         return SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -186,15 +213,6 @@ def _parse_spawn_pose(raw_pose: object, field_name: str) -> SpawnPose:
             roll=_to_float(raw_pose[3], f"{field_name}[3]"),
             pitch=_to_float(raw_pose[4], f"{field_name}[4]"),
             yaw=_to_float(raw_pose[5], f"{field_name}[5]"),
-        )
-    if isinstance(raw_pose, dict):
-        return SpawnPose(
-            x=_to_float(raw_pose.get("x", 0.0), f"{field_name}.x"),
-            y=_to_float(raw_pose.get("y", 0.0), f"{field_name}.y"),
-            z=_to_float(raw_pose.get("z", 0.0), f"{field_name}.z"),
-            roll=_to_float(raw_pose.get("roll", 0.0), f"{field_name}.roll"),
-            pitch=_to_float(raw_pose.get("pitch", 0.0), f"{field_name}.pitch"),
-            yaw=_to_float(raw_pose.get("yaw", 0.0), f"{field_name}.yaw"),
         )
     raise ValueError(
         f"{field_name} must be a 6-element array [x,y,z,roll,pitch,yaw]."
@@ -255,11 +273,13 @@ def _parse_vehicle_layouts(
         entry_name = f"{field_name}[{idx}]"
         if not isinstance(raw_vehicle, dict):
             raise ValueError(
-                f"{entry_name} must be an object with 'id', optional 'spawn_pose', and '{sensor_field}'."
+                f"{entry_name} must be an object with 'id', optional 'spawn_pose', required 'offboard', and '{sensor_field}'."
             )
 
         if "id" not in raw_vehicle:
             raise ValueError(f"{entry_name} must include 'id'.")
+        if "offboard" not in raw_vehicle:
+            raise ValueError(f"{entry_name} must include 'offboard'.")
 
         vehicle_id = _to_int(raw_vehicle["id"], f"{entry_name}.id")
         if vehicle_id in seen_vehicle_ids:
@@ -277,6 +297,7 @@ def _parse_vehicle_layouts(
                 id=vehicle_id,
                 spawn_pose=_parse_spawn_pose(raw_vehicle.get("spawn_pose"), f"{entry_name}.spawn_pose"),
                 sensors=sensors,
+                offboard=_to_mapping(raw_vehicle["offboard"], f"{entry_name}.offboard"),
             )
         )
 
@@ -284,58 +305,35 @@ def _parse_vehicle_layouts(
     return vehicles
 
 
-def _load_legacy_layout(data: dict) -> UwbLayout:
-    anchors_raw = data.get("anchors")
-    tags_raw = data.get("tags")
-    if anchors_raw is None or tags_raw is None:
-        raise ValueError("Layout file must include either 'uavs'/'ugvs' or legacy 'anchors'/'tags'.")
-    if not isinstance(anchors_raw, list) or not isinstance(tags_raw, list):
-        raise ValueError("Legacy 'anchors' and 'tags' fields must be lists.")
-
-    anchors = [
-        SensorPlacement(id=idx, position=_to_xyz(raw_point, f"anchors[{idx - 1}]"))
-        for idx, raw_point in enumerate(anchors_raw, start=1)
-    ]
-    tags = [
-        SensorPlacement(id=idx, position=_to_xyz(raw_point, f"tags[{idx - 1}]"))
-        for idx, raw_point in enumerate(tags_raw, start=1)
-    ]
-
-    return UwbLayout(
-        uavs=[VehicleLayout(id=0, spawn_pose=SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), sensors=tags)],
-        ugvs=[VehicleLayout(id=0, spawn_pose=SpawnPose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), sensors=anchors)],
-    )
-
-
 def load_layout(layout_path: Path) -> UwbLayout:
     data = yaml.safe_load(layout_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Layout file must be a mapping/object.")
 
-    if "uavs" in data or "ugvs" in data:
-        if "uavs" not in data or "ugvs" not in data:
-            raise ValueError("Multi-robot layouts must include both 'uavs' and 'ugvs'.")
+    if "uavs" not in data or "ugvs" not in data:
+        raise ValueError("Layout file must include both 'uavs' and 'ugvs'.")
 
-        seen_tag_ids: set[int] = set()
-        seen_anchor_ids: set[int] = set()
+    seen_tag_ids: set[int] = set()
+    seen_anchor_ids: set[int] = set()
 
-        uavs = _parse_vehicle_layouts(
-            data["uavs"],
-            field_name="uavs",
-            sensor_field="tags",
-            sensor_label="tag",
-            global_seen_sensor_ids=seen_tag_ids,
-        )
-        ugvs = _parse_vehicle_layouts(
-            data["ugvs"],
-            field_name="ugvs",
-            sensor_field="anchors",
-            sensor_label="anchor",
-            global_seen_sensor_ids=seen_anchor_ids,
-        )
-        layout = UwbLayout(uavs=uavs, ugvs=ugvs)
-    else:
-        layout = _load_legacy_layout(data)
+    uavs = _parse_vehicle_layouts(
+        data["uavs"],
+        field_name="uavs",
+        sensor_field="tags",
+        sensor_label="tag",
+        global_seen_sensor_ids=seen_tag_ids,
+    )
+    ugvs = _parse_vehicle_layouts(
+        data["ugvs"],
+        field_name="ugvs",
+        sensor_field="anchors",
+        sensor_label="anchor",
+        global_seen_sensor_ids=seen_anchor_ids,
+    )
+    layout = UwbLayout(
+        uavs=uavs,
+        ugvs=ugvs,
+    )
 
     if not layout.all_anchors:
         raise ValueError("Layout must include at least one anchor.")
@@ -688,6 +686,139 @@ def _find_offboard_bridge_targets(uwb_root: Path) -> List[Path]:
     return targets
 
 
+def _default_offboard_params(role: str, vehicle_id: int) -> dict[str, Any]:
+    frame_prefix = f"{role}_{vehicle_id}"
+    if role == "uav":
+        return {
+            "trajectory_csv_file": "trajectory_lemniscate_uav.csv",
+            "lookahead_distance": 2.0,
+            "cruise_speed": 0.5,
+            "odom_error_position": 0.0,
+            "odom_error_angle": 0.0,
+            "ros_odometry_topic": f"/{frame_prefix}/odom",
+            "ros_gt_topic": f"/{frame_prefix}/gt",
+            "frame_prefix": frame_prefix,
+            "marker_array_topic": f"/{frame_prefix}/gt_marker_array",
+            "world_frame_id": "map",
+        }
+
+    return {
+        "trajectory_csv_file": "trajectory_lemniscate_agv.csv",
+        "lookahead_distance": 2.0,
+        "cruise_speed": 0.52,
+        "odom_error_position": 0.0,
+        "odom_error_angle": 0.0,
+        "ros_odometry_topic": f"/{frame_prefix}/odom",
+        "ros_gt_topic": f"/{frame_prefix}/gt",
+        "frame_prefix": frame_prefix,
+        "marker_array_topic": f"/{frame_prefix}/gt_marker_array",
+        "distances_list_topic": f"/{frame_prefix}/eliko/Distances",
+        "world_frame_id": "map",
+    }
+
+
+def resolve_offboard_params(
+    overrides: Mapping[str, Any],
+    *,
+    role: str,
+    vehicle_id: int,
+) -> dict[str, Any]:
+    merged = _default_offboard_params(role, vehicle_id)
+    merged.update(overrides)
+    return merged
+
+
+def _px4_topic_base(instance_index: int) -> str:
+    return f"/px4_{instance_index}/fmu"
+
+def _flow_vector(values: Sequence[float]) -> list[float]:
+    return [float(value) for value in values]
+
+
+def node_name(role: str, vehicle_id: int) -> str:
+    return f"{role}_offboard_control_{vehicle_id}"
+
+
+def build_uav_offboard_params(layout: UwbLayout, assignment: SpawnAssignment) -> dict[str, Any]:
+    vehicle = assignment.vehicle
+    params = resolve_offboard_params(vehicle.offboard, role="uav", vehicle_id=vehicle.id)
+    px4_base = _px4_topic_base(assignment.instance_index)
+    pose = vehicle.spawn_pose
+
+    ros_params: dict[str, Any] = {
+        "offboard_control_mode_topic": f"{px4_base}/in/offboard_control_mode",
+        "trajectory_setpoint_topic": f"{px4_base}/in/trajectory_setpoint",
+        "vehicle_command_topic": f"{px4_base}/in/vehicle_command",
+        "vehicle_odometry_topic": f"{px4_base}/out/vehicle_odometry",
+        "vehicle_local_position_topic": f"{px4_base}/out/vehicle_local_position_v1",
+        "trajectory_csv_file": params["trajectory_csv_file"],
+        "ros_odometry_topic": params["ros_odometry_topic"],
+        "ros_gt_topic": params["ros_gt_topic"],
+        "lookahead_distance": params["lookahead_distance"],
+        "cruise_speed": params["cruise_speed"],
+        "odom_error_position": params["odom_error_position"],
+        "odom_error_angle": params["odom_error_angle"],
+        "uav_origin": _flow_vector([pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw]),
+        "vehicle_target_system": assignment.target_system,
+        "frame_prefix": params["frame_prefix"],
+        "marker_array_topic": params["marker_array_topic"],
+        "world_frame_id": params["world_frame_id"],
+    }
+
+    for sensor in vehicle.sensors:
+        ros_params[f"tags.{sensor.id}.position"] = _flow_vector(list(sensor.position))
+
+    return ros_params
+
+
+def build_ugv_offboard_params(layout: UwbLayout, assignment: SpawnAssignment) -> dict[str, Any]:
+    vehicle = assignment.vehicle
+    params = resolve_offboard_params(vehicle.offboard, role="ugv", vehicle_id=vehicle.id)
+    px4_base = _px4_topic_base(assignment.instance_index)
+    pose = vehicle.spawn_pose
+
+    ros_params: dict[str, Any] = {
+        "offboard_control_mode_topic": f"{px4_base}/in/offboard_control_mode",
+        "trajectory_setpoint_topic": f"{px4_base}/in/trajectory_setpoint",
+        "vehicle_command_topic": f"{px4_base}/in/vehicle_command",
+        "vehicle_odometry_topic": f"{px4_base}/out/vehicle_odometry",
+        "vehicle_local_position_topic": f"{px4_base}/out/vehicle_local_position_v1",
+        "trajectory_csv_file": params["trajectory_csv_file"],
+        "ros_odometry_topic": params["ros_odometry_topic"],
+        "ros_gt_topic": params["ros_gt_topic"],
+        "lookahead_distance": params["lookahead_distance"],
+        "cruise_speed": params["cruise_speed"],
+        "odom_error_position": params["odom_error_position"],
+        "odom_error_angle": params["odom_error_angle"],
+        "agv_origin": _flow_vector([pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw]),
+        "vehicle_target_system": assignment.target_system,
+        "frame_prefix": params["frame_prefix"],
+        "marker_array_topic": params["marker_array_topic"],
+        "distances_list_topic": params["distances_list_topic"],
+        "world_frame_id": params["world_frame_id"],
+        "tags": {"ids": [str(sensor.id) for sensor in layout.all_tags]},
+    }
+
+    for sensor in vehicle.sensors:
+        ros_params[f"anchors.{sensor.id}.position"] = _flow_vector(list(sensor.position))
+
+    return ros_params
+
+
+def build_offboard_launch_entries(layout: UwbLayout) -> List[Tuple[str, str, dict[str, Any]]]:
+    entries: List[Tuple[str, str, dict[str, Any]]] = []
+    for assignment in iter_spawn_assignments(layout):
+        if assignment.vehicle_type == "uav":
+            entries.append(
+                (node_name("uav", assignment.vehicle.id), "uav_offboard_control", build_uav_offboard_params(layout, assignment))
+            )
+        else:
+            entries.append(
+                (node_name("agv", assignment.vehicle.id), "agv_offboard_control", build_ugv_offboard_params(layout, assignment))
+            )
+    return entries
+
+
 def _format_generated_model_paths(model_dirs: Iterable[Path]) -> str:
     sorted_dirs = sorted(model_dirs)
     return "\n".join(f"  - {path}" for path in sorted_dirs)
@@ -704,7 +835,7 @@ def main() -> None:
         "--layout",
         required=True,
         type=Path,
-        help="Path to layout YAML file. Supports multi-robot and legacy schemas.",
+        help="Path to layout YAML file.",
     )
     parser.add_argument(
         "--uwb-root",
@@ -722,8 +853,8 @@ def main() -> None:
     layout = load_layout(args.layout)
 
     if args.emit_spawn_layout:
-        for vehicle_type, vehicle in iter_spawn_vehicles(layout):
-            print(format_spawn_line(vehicle_type, vehicle))
+        for assignment in iter_spawn_assignments(layout):
+            print(format_spawn_line(assignment))
         return
 
     uwb_root = args.uwb_root.resolve()

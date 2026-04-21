@@ -60,11 +60,14 @@
 
 #include <chrono>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 
 #include <rclcpp/qos.hpp>
 
 #include <fstream>
 #include <sstream>
+#include <map>
 #include <vector>
 #include <random>
 #include <stdexcept>
@@ -88,32 +91,41 @@ static inline double wrapPi(double a) {
     return a;
 }
 
+static std::vector<std::string> directSensorKeysFromPrefixes(
+    const std::vector<std::string> &prefixes,
+    const std::string &ns_prefix,
+    const std::string &sensor_prefix)
+{
+    std::vector<std::string> keys;
+    const std::string prefix = ns_prefix + ".";
+    for (const auto &entry : prefixes) {
+        if (entry.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const std::string sensor_id = entry.substr(prefix.size());
+        const bool is_numeric = std::all_of(
+            sensor_id.begin(),
+            sensor_id.end(),
+            [](unsigned char c) { return std::isdigit(c) != 0; });
+        if (!is_numeric) {
+            continue;
+        }
+        keys.push_back(sensor_prefix + sensor_id);
+    }
+
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
 class UAVOffboardControl : public rclcpp::Node
 {
 public:
-	UAVOffboardControl() : Node("uav_offboard_control")
+	UAVOffboardControl()
+	: Node(
+		"uav_offboard_control",
+		rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true))
 	{
-
-		// Declare parameters with default values
-		this->declare_parameter<std::string>("offboard_control_mode_topic", "/px4_1/fmu/in/offboard_control_mode");
-		this->declare_parameter<std::string>("trajectory_setpoint_topic", "/px4_1/fmu/in/trajectory_setpoint");
-		this->declare_parameter<std::string>("vehicle_command_topic", "/px4_1/fmu/in/vehicle_command");
-		this->declare_parameter<std::string>("vehicle_odometry_topic", "/px4_1/fmu/out/vehicle_odometry");
-		this->declare_parameter<std::string>("vehicle_local_position_topic", "/px4_1/fmu/out/vehicle_local_position");
-		this->declare_parameter<std::string>("trajectory_csv_file", "trajectory_lemniscate_uav.csv");
-		this->declare_parameter<std::string>("ros_odometry_topic", "/uav/odom");
-		this->declare_parameter<std::string>("ros_gt_topic", "/uav/gt");
-		this->declare_parameter<double>("odom_error_position", 0.0);
-		this->declare_parameter<double>("odom_error_angle", 0.0);
-
-		this->declare_parameter<double>("lookahead_distance", 2.0);
-		this->declare_parameter<double>("cruise_speed", 0.5);
-
-		this->declare_parameter<std::vector<double>>("uav_origin", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
-
-		this->declare_parameter<std::vector<double>>("tags.t1.position", {0.0,0.0,0.0});
-    	this->declare_parameter<std::vector<double>>("tags.t2.position", {0.0,0.0,0.0});
-
 		// Retrieve parameter values
 		std::string offboard_control_mode_topic_;
 		std::string trajectory_setpoint_topic_;
@@ -135,8 +147,27 @@ public:
 
 		this->get_parameter("odom_error_position", odom_error_position_);
 		this->get_parameter("odom_error_angle", odom_error_angle_);
+		int vehicle_target_system = 2;
+		this->get_parameter("vehicle_target_system", vehicle_target_system);
+		vehicle_target_system_ = static_cast<uint8_t>(vehicle_target_system);
+		this->get_parameter("frame_prefix", frame_prefix_);
+		this->get_parameter("marker_array_topic", marker_array_topic_);
+		this->get_parameter("world_frame_id", world_frame_id_);
 
 		this->get_parameter("cruise_speed", cruise_speed_);
+
+		const auto listed = this->list_parameters({"tags"}, 10);
+		tag_keys_ = directSensorKeysFromPrefixes(listed.prefixes, "tags", "t");
+		if (tag_keys_.empty()) {
+			throw std::runtime_error("Missing tag configuration under 'tags'.");
+		}
+		for (const auto &tag_key : tag_keys_) {
+			const std::string tag_numeric = tag_key.size() > 1 ? tag_key.substr(1) : tag_key;
+			const std::string compact_param = "tags." + tag_numeric + ".position";
+			if (!this->has_parameter(compact_param)) {
+				throw std::runtime_error("Missing tag position parameter: " + compact_param);
+			}
+		}
 
 		pos_scale_err_ = odom_error_position_ / 100.0;
 		yaw_scale_err_ = odom_error_angle_   / 100.0;
@@ -177,7 +208,7 @@ public:
 		ros_odometry_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>(ros_odometry_topic_, 10);
 		ros_gt_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(ros_gt_topic_, 10);
 
-		marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("uav/gt_marker_array", 10);
+		marker_array_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(marker_array_topic_, 10);
 
 		start_time_ = this->get_clock()->now();
 
@@ -187,14 +218,16 @@ public:
 		// Set QoS to match PX4 publisher
 		rclcpp::QoS qos_profile = rclcpp::SensorDataQoS();
 
-		for (const auto& tag : {"t1", "t2"}) {
+		for (const auto& tag : tag_keys_) {
 			std::vector<double> tag_pos;
-			std::string param_name = "tags." + std::string(tag) + ".position";
-			if (this->get_parameter(param_name, tag_pos) && tag_pos.size() == 3) {
+			const std::string tag_numeric = tag.size() > 1 ? tag.substr(1) : tag;
+			const std::string compact_param = "tags." + tag_numeric + ".position";
+			const bool loaded = this->get_parameter(compact_param, tag_pos) && tag_pos.size() == 3;
+			if (loaded) {
 				geometry_msgs::msg::TransformStamped tf;
 				tf.header.stamp = this->get_clock()->now();
-				tf.header.frame_id = "uav/base_link";
-				tf.child_frame_id = "uav/" + std::string(tag);
+				tf.header.frame_id = frame_prefix_ + "/base_link";
+				tf.child_frame_id = frame_prefix_ + "/" + tag;
 				tf.transform.translation.x = tag_pos[0];
 				tf.transform.translation.y = tag_pos[1];
 				tf.transform.translation.z = tag_pos[2];
@@ -308,8 +341,8 @@ public:
 			// --- Fill and publish Odometry (NOISY pose) ---
 			nav_msgs::msg::Odometry odom_msg;
 			odom_msg.header.stamp = this->get_clock()->now();
-				odom_msg.header.frame_id = "uav/odom";
-				odom_msg.child_frame_id = "uav/base_link";
+				odom_msg.header.frame_id = frame_prefix_ + "/odom";
+				odom_msg.child_frame_id = frame_prefix_ + "/base_link";
 
 			// NOISY position
 			odom_msg.pose.pose.position.x = pos_noisy_enu_.x();
@@ -434,7 +467,7 @@ public:
 				geometry_msgs::msg::PoseStamped pose_msg;
 				// Header
 				pose_msg.header.stamp = this->get_clock()->now();
-				pose_msg.header.frame_id = "map";  // or "world", depending on your convention
+				pose_msg.header.frame_id = world_frame_id_;
 
 				pose_msg.pose.position.x = pos_enu_world.x();
 				pose_msg.pose.position.y = pos_enu_world.y();
@@ -448,8 +481,8 @@ public:
 
 				geometry_msgs::msg::TransformStamped tf_msg;
 				tf_msg.header.stamp = pose_msg.header.stamp;
-				tf_msg.header.frame_id = "map";
-				tf_msg.child_frame_id = "uav/base_link";
+				tf_msg.header.frame_id = world_frame_id_;
+				tf_msg.child_frame_id = frame_prefix_ + "/base_link";
 				tf_msg.transform.translation.x = pos_enu_world.x();
 				tf_msg.transform.translation.y = pos_enu_world.y();
 				tf_msg.transform.translation.z = pos_enu_world.z();
@@ -466,7 +499,7 @@ public:
 				for (size_t i = 0; i < gt_pose_history_.size(); ++i) {
 					visualization_msgs::msg::Marker marker;
 					marker.header = pose_msg.header;
-					marker.ns = "uav_gt";
+					marker.ns = frame_prefix_ + "_gt";
 					marker.id = i;
 					marker.type = visualization_msgs::msg::Marker::SPHERE;
 					marker.action = visualization_msgs::msg::Marker::ADD;
@@ -602,7 +635,12 @@ private:
 	double z_reset_accum_{0.0};
 
     rclcpp::Time start_time_;
-    bool started_ = false;
+	bool started_ = false;
+	uint8_t vehicle_target_system_ = 2;
+	std::string frame_prefix_{"uav"};
+	std::string world_frame_id_{"map"};
+	std::string marker_array_topic_{"/uav/gt_marker_array"};
+	std::vector<std::string> tag_keys_;
 
 	std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 	std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
@@ -697,9 +735,6 @@ void UAVOffboardControl::publish_offboard_control_mode()
  */
 void UAVOffboardControl::publish_trajectory_setpoint()
 {
-	
-	if(!started_) return;
-
 	std::array<double, 4> pose;
 	{
 		std::lock_guard<std::mutex> lock(position_mutex_);
@@ -739,6 +774,8 @@ void UAVOffboardControl::publish_trajectory_setpoint()
 		}
 		return;
 	}
+
+	if(!started_) return;
 
 	// ---- Begin normal trajectory tracking ----
 
@@ -856,7 +893,7 @@ void UAVOffboardControl::publish_vehicle_command(uint16_t command, float param1,
 	msg.param1 = param1;
 	msg.param2 = param2;
 	msg.command = command;
-	msg.target_system = 2; //2 //CAREFUL WITH THIS!!!
+	msg.target_system = vehicle_target_system_;
 	msg.target_component = 1;
 	msg.source_system = 1;
 	msg.source_component = 1;
