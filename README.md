@@ -25,6 +25,29 @@ It includes:
 
 ![](images/SimDiagram.png)
 
+## Prerequisites and dependencies
+
+This repository is intended for the PX4/Gazebo SITL workflow. The simulation side has been tested with:
+
+- Ubuntu 24.04 LTS
+- ROS 2 Jazzy
+- Gazebo Harmonic
+- PX4 SITL
+
+The rest of the localization stack may also be used with ROS 2 Humble, but the PX4/Gazebo multi-vehicle setup documented here should currently be considered a ROS 2 Jazzy workflow.
+
+Before using `UWBPX4Sim`, make sure the following are installed:
+
+- [ROS 2 Jazzy](https://docs.ros.org/en/jazzy/index.html)
+- [Gazebo Harmonic](https://gazebosim.org/docs/harmonic/ros_installation/)
+- [PX4 toolchain](https://docs.px4.io/main/en/dev_setup/dev_env_linux_ubuntu.html)
+- [QGroundControl](https://docs.qgroundcontrol.com/master/en/qgc-user-guide/releases/daily_builds.html)
+- [Micro XRCE-DDS Agent and Client](https://docs.px4.io/main/en/ros2/user_guide.html#setup-micro-xrce-dds-agent-client)
+- [tmux](https://github.com/tmux/tmux/wiki/Installing)
+
+If you are unsure whether your PX4/ROS 2/Gazebo setup is healthy, it is worth first testing the stock PX4 [multi-vehicle](https://docs.px4.io/main/en/sim_gazebo_gz/multi_vehicle_simulation) Gazebo example before layering the custom UWB simulation on top.
+
+
 ## What the plugin does
 
 For each UGV anchor and UAV tag pair, the plugin publishes:
@@ -36,25 +59,10 @@ The simulated model includes:
 
 - LOS degradation as a function of distance
 - NLOS degradation as a function of effective blocked thickness along the line of sight
-- optional persistent pair bias
-- one-sided stochastic NLOS noise, so NLOS tends to overestimate range rather than underestimate it
-- body-shadow contribution from the robot bodies, capped so it cannot by itself exceed Soft NLOS
-
-The default Gazebo topic families are:
-
-- `/uwb_gz_simulator/distances/aItJ`
-- `/uwb_gz_simulator/distances_ground_truth/aItJ`
-
-where `aItJ` denotes anchor `I` and tag `J`.
-
-## Measurement model summary
-
-The plugin computes an effective blocked thickness for each anchor-tag line of sight:
-
-- wall blockage is measured directly from world obstacle intersections
-- robot-body blockage is converted to an equivalent thickness term
-- body-shadow contribution is ignored below the LOS thickness threshold
-- body-shadow contribution is capped so it cannot exceed the Soft-NLOS thickness ceiling by itself
+- Blocked thickness measured directly from world obstacle intersections
+- Optional persistent pair bias
+- One-sided stochastic NLOS noise, so NLOS tends to overestimate range rather than underestimate it
+- Blockage contribution from robot bodies themselves, capped so it cannot by itself exceed Soft NLOS
 
 The NLOS model lets the user tune:
 
@@ -62,6 +70,13 @@ The NLOS model lets the user tune:
 - dropout range and standard-deviation range
 - how much faster Hard NLOS degrades than Soft NLOS
 - how much more important thickness is than distance in NLOS
+
+The default Gazebo topic families are:
+
+- `/uwb_gz_simulator/distances/aItJ`
+- `/uwb_gz_simulator/distances_ground_truth/aItJ`
+
+where `aItJ` denotes anchor `I` and tag `J`.
 
 ## Plugin parameters
 
@@ -254,7 +269,7 @@ The UGV additionally publishes an aggregated list of UWB ranges using a custom m
 | `distances_list_topic` | Aggregated UWB range-list topic published by the UGV node. | `/<frame_prefix>/eliko/Distances` |
 
 
-## 2. Using the plugin in PX4 SITL
+## 2. Setting up the plugin in PX4 SITL
 
 1. Copy the generated model folders from `models/custom_models/` into:
 
@@ -506,28 +521,31 @@ That file contains:
 
 for every anchor-tag pair defined by the current layout.
 
-## 4. Running the experiment
+## 4. Running the simulation
 
-`simulator_launcher.sh` reads the same layout YAML for robot spawn poses, and the ROS 2 offboard launch reads that same file again to derive the node parameters. The launcher does not generate models or the bridge config for you. That preparation step must still be done manually before launching. By default it uses:
-
-```text
-config/uwb_layout.four_vehicle_example.yaml
-```
+`simulator_launcher.sh` reads the same layout YAML for robot spawn poses, and the ROS 2 offboard launch reads that same file again to derive the node parameters. The launcher does not generate models or the bridge config for you. That preparation step must still be done manually before launching. By default it uses `config/uwb_layout.four_vehicle_example.yaml`
 
 You can point it to a different layout file with:
 
 ```bash
 export UWB_LAYOUT_FILE=/path/to/your_layout.yaml
-./simulator_launcher.sh
 ```
 
-Before running the launcher, generate the required models and bridge config manually:
+Additionally, `simulator_launcher.sh` makes a few default assumptions:
+
+- the ROS 2 workspace can be auto-detected from the repository location
+- PX4 lives at `~/PX4-Autopilot`
+- the QGroundControl AppImage is located in `~/Desktop` or `~/Downloads`
+
+If your setup differs, override the paths before launching:
 
 ```bash
-python3 tools/configure_uwb_layout.py --layout config/uwb_layout.example.yaml
+export ROS_WS=/path/to/your_ws
+export PX4_DIR=/path/to/PX4-Autopilot
+export QGC_PATH=/path/to/QGroundControl.AppImage
 ```
 
-When the launcher starts the ROS 2 side, it launches:
-
-- `uwb_bridge_launch.py` using `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
-- `offboard_launch.py` using `UWB_LAYOUT_FILE` directly
+After setting up these environment variables, you can run the experiment with the following command:
+```bash
+./simulator_launcher.sh
+```
