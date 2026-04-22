@@ -789,7 +789,22 @@ void AGVOffboardControl::load_trajectory(const std::string &filename)
 			}
 		}
 		if (i == 4) {
-			trajectory_.push_back(pose);
+			// Trajectories are authored in the vehicle-local ENU frame.
+			// Convert them once into world ENU so they align with the
+			// world-frame pose tracked by the controller.
+			Eigen::Vector3d local_pos_enu(pose[0], pose[1], pose[2]);
+			Eigen::Vector3d world_pos_enu = origin_q_enu_ * local_pos_enu + origin_pos_enu_;
+
+			Eigen::Quaterniond q_local_enu(
+				Eigen::AngleAxisd(pose[3], Eigen::Vector3d::UnitZ()));
+			Eigen::Quaterniond q_world_enu = origin_q_enu_ * q_local_enu;
+			const double yaw_world_enu = wrapPi(yaw_from_quat_enu(q_world_enu));
+
+			trajectory_.push_back({
+				world_pos_enu.x(),
+				world_pos_enu.y(),
+				world_pos_enu.z(),
+				yaw_world_enu});
 		}
 	}
 	file.close();

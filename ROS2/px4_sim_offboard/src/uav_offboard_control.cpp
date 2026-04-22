@@ -677,7 +677,22 @@ void UAVOffboardControl::load_trajectory(const std::string &filename)
 			}
 		}
 		if (i == 4) {
-			trajectory_.push_back(pose);
+			// Trajectories are authored in the vehicle-local ENU frame.
+			// Convert them once into world ENU so they can be compared
+			// directly against the world-frame ground-truth pose.
+			Eigen::Vector3d local_pos_enu(pose[0], pose[1], pose[2]);
+			Eigen::Vector3d world_pos_enu = origin_q_enu_ * local_pos_enu + origin_pos_enu_;
+
+			Eigen::Quaterniond q_local_enu(
+				Eigen::AngleAxisd(pose[3], Eigen::Vector3d::UnitZ()));
+			Eigen::Quaterniond q_world_enu = origin_q_enu_ * q_local_enu;
+			const double yaw_world_enu = wrapPi(yaw_from_quat_enu(q_world_enu));
+
+			trajectory_.push_back({
+				world_pos_enu.x(),
+				world_pos_enu.y(),
+				world_pos_enu.z(),
+				yaw_world_enu});
 		}
 	}
 	file.close();
@@ -721,8 +736,13 @@ void UAVOffboardControl::land()
 void UAVOffboardControl::publish_offboard_control_mode()
 {
 	OffboardControlMode msg{};
-	msg.position = true;
-	msg.velocity = true;
+	if (!started_ || !hover_reached_) {
+		msg.position = true;
+		msg.velocity = false;
+	} else {
+		msg.position = false;
+		msg.velocity = true;
+	}
 	msg.acceleration = false;
 	msg.attitude = false;
 	msg.body_rate = false;
@@ -741,7 +761,7 @@ void UAVOffboardControl::publish_trajectory_setpoint()
 		pose = current_pose_;
 	}
 
-	if (!hover_reached_) {
+	if (!started_ || !hover_reached_) {
 		// Check distance to hover point
 		double dx = pose[0] - initial_hover_target_[0];
 		double dy = pose[1] - initial_hover_target_[1];
@@ -761,21 +781,28 @@ void UAVOffboardControl::publish_trajectory_setpoint()
 		double yaw_ned = px4_ros_com::frame_transforms::utils::quaternion::quaternion_get_yaw(q_hover_ned);
 
 		TrajectorySetpoint msg{};
+		const auto nan = std::numeric_limits<float>::quiet_NaN();
 		msg.position = {static_cast<float>(p_local_ned.x()),
 						static_cast<float>(p_local_ned.y()),
 						static_cast<float>(p_local_ned.z())};
+		msg.velocity = {nan, nan, nan};
+		msg.acceleration = {nan, nan, nan};
+		msg.jerk = {nan, nan, nan};
 		msg.yaw = static_cast<float>(wrapPi(yaw_ned));
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
 
 		if (dist < hover_tolerance_) {
-			RCLCPP_INFO(this->get_logger(), "Initial hover position reached.");
+			if (!hover_reached_) {
+				RCLCPP_INFO(this->get_logger(), "Initial hover position reached.");
+			}
 			hover_reached_ = true;
 		}
-		return;
-	}
 
-	if(!started_) return;
+		if (!started_ || !hover_reached_) {
+			return;
+		}
+	}
 
 	// ---- Begin normal trajectory tracking ----
 

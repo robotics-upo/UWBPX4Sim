@@ -594,6 +594,31 @@ def _rewrite_model_config_identity(model_config_path: Path, target_model_name: s
     model_config_path.write_text(updated, encoding="utf-8")
 
 
+def _extract_plugin_blocks(model_sdf_path: Path) -> list[str]:
+    text = model_sdf_path.read_text(encoding="utf-8")
+    return re.findall(r"(<plugin\b.*?</plugin>)", text, flags=re.S)
+
+
+def _append_plugin_blocks(model_sdf_path: Path, plugin_blocks: Sequence[str]) -> None:
+    if not plugin_blocks:
+        return
+
+    text = model_sdf_path.read_text(encoding="utf-8")
+    if "<plugin " in text:
+        return
+
+    plugin_text = "\n\n" + "\n\n".join(plugin_blocks) + "\n"
+    updated, count = re.subn(
+        r"\n\s*</model>\s*\n\s*</sdf>\s*$",
+        plugin_text + "\n  </model>\n</sdf>\n",
+        text,
+        count=1,
+    )
+    if count != 1:
+        raise RuntimeError(f"Could not append plugin blocks to {model_sdf_path}")
+    model_sdf_path.write_text(updated, encoding="utf-8")
+
+
 def _copy_and_prepare_model_dir(
     *,
     template_dir: Path,
@@ -863,10 +888,18 @@ def main() -> None:
     base_models_dir = models_dir / BASE_MODELS_DIRNAME
     custom_models_dir = models_dir / CUSTOM_MODELS_DIRNAME
     uav_template_dir = base_models_dir / "x500_base"
+    uav_plugin_template_dir = base_models_dir / "x500"
     ugv_template_dir = base_models_dir / "r1_rover"
     bridge_yaml = uwb_root / "ROS2" / "px4_sim_offboard" / "config" / "uwb_bridge.yaml"
 
-    for path in (uav_template_dir, ugv_template_dir, uav_template_dir / "model.sdf", ugv_template_dir / "model.sdf"):
+    for path in (
+        uav_template_dir,
+        uav_plugin_template_dir,
+        ugv_template_dir,
+        uav_template_dir / "model.sdf",
+        uav_plugin_template_dir / "model.sdf",
+        ugv_template_dir / "model.sdf",
+    ):
         if not path.exists():
             raise FileNotFoundError(f"Required template path not found: {path}")
     if not args.skip_bridge and not bridge_yaml.parent.exists():
@@ -875,6 +908,7 @@ def main() -> None:
     custom_models_dir.mkdir(parents=True, exist_ok=True)
 
     generated_model_dirs: List[Path] = []
+    uav_plugin_blocks = _extract_plugin_blocks(uav_plugin_template_dir / "model.sdf")
 
     for uav in layout.uavs:
         model_name = f"x500_{uav.id}"
@@ -891,6 +925,7 @@ def main() -> None:
             spec=_tag_visual_spec(model_name),
             label="Tag",
         )
+        _append_plugin_blocks(model_sdf, uav_plugin_blocks)
         generated_model_dirs.append(target_dir)
 
     for ugv in layout.ugvs:
