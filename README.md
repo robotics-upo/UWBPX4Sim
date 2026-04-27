@@ -530,11 +530,11 @@ Additionally, the experiment will use the default (empty) Gazebo world for the e
 export GZ_WORLD=<your-world-name>
 ```
 
-**NOTE**: before doing this, make sure you have included your custom world in the corresponding folder in PX4-Autopilot so that PX4 can find it. 
+**NOTE**: before doing this, make sure you have included your custom world in the corresponding folder in ``PX4-Autopilot`` so that PX4 can find it. 
 
 Finally, `simulator_launcher.sh` also makes the following assumptions:
 
-- the ROS 2 workspace directory is either at $SCRIPT_DIR/../.. (when using the standalone simulator) or $SCRIPT_DIR/../../.. (when using the submodule in ``mr-radio-localization``)
+- the ROS 2 workspace directory is either at ``<path_to_UWBPX4Sim>/../..`` (when using UWBPX4Sim as standalone) or ``<path_to_UWBPX4Sim>/../../..`` (when using UWBPX4Sim as a submodule of ``mr-radio-localization``)
 - PX4 lives at `~/PX4-Autopilot`
 - the QGroundControl AppImage is located in `~/Desktop` or `~/Downloads`
 
