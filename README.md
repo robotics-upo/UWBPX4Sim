@@ -37,6 +37,7 @@ Before using `UWBPX4Sim`, make sure the following are installed:
 - [QGroundControl](https://docs.qgroundcontrol.com/master/en/qgc-user-guide/releases/daily_builds.html)
 - [Micro XRCE-DDS Agent and Client](https://docs.px4.io/main/en/ros2/user_guide.html#setup-micro-xrce-dds-agent-client)
 - [tmux](https://github.com/tmux/tmux/wiki/Installing)
+- The `eliko_messages` ROS 2 package from [`eliko_ros`](https://github.com/robotics-upo/eliko_ros), required by the UGV offboard node to publish aggregated UWB range messages.
 
 If you are unsure whether your PX4/ROS 2/Gazebo setup is healthy, it is worth first testing the PX4 [multi-vehicle](https://docs.px4.io/main/en/sim_gazebo_gz/multi_vehicle_simulation) Gazebo example before trying out this plugin.
 
@@ -249,7 +250,7 @@ These keys are accepted for both UAVs and UGVs.
 
 #### Eliko aggregated measurements
 
-The UGV additionally publishes an aggregated list of UWB ranges using a custom message definition from the ['eliko_ros`](https://github.com/robotics-upo/eliko_ros) package. This is done for integration in the use case scenario of "Radio-based Multi-Robot Odometry and Relative Localization" where UGV hosts the UWB server, in order to be consistent with the real experiment setups. If you are not going to use this setup, you can ignore this topic and use the generic pair topics. 
+The UGV additionally publishes an aggregated list of UWB ranges using `eliko_messages/msg/DistancesList` from the [`eliko_ros`](https://github.com/robotics-upo/eliko_ros) repository. This is done for integration in the use case scenario of "Radio-based Multi-Robot Odometry and Relative Localization" where the UGV hosts the UWB server, in order to be consistent with the real experiment setup. If you are not going to use this setup, you can ignore this topic and use the generic pair topics.
 
 | Key | Meaning | Default |
 | --- | --- | --- |
@@ -371,14 +372,17 @@ The `ROS2/` folder contains both:
 
 `px4_sim_offboard` must be present in your ROS 2 workspace and built before you launch the ROS-side nodes. If you clone the full `UWBPX4Sim` repository into your workspace `src/` directory, `colcon` will find `ROS2/px4_sim_offboard` automatically.
 
+The package also depends on `eliko_messages` from [`eliko_ros`](https://github.com/robotics-upo/eliko_ros), because the UGV node publishes aggregated UWB measurements on `/<ugv_frame_prefix>/eliko/Distances`.
+
 Example:
 
 ```bash
 cd <ros_ws>/src
 git clone https://github.com/amartinezsilva/UWBPX4Sim.git
+git clone https://github.com/robotics-upo/eliko_ros.git
 
 cd <ros_ws>
-colcon build --packages-select px4_sim_offboard
+colcon build --packages-up-to px4_sim_offboard
 source install/setup.bash
 ```
 
