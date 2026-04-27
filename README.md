@@ -270,6 +270,9 @@ The UGV additionally publishes an aggregated list of UWB ranges using a custom m
 <PX4-Autopilot>/src/modules/simulation/gz_plugins/
 ```
 
+**NOTE**: `COLCON_IGNORE` only tells ROS 2 / `colcon` not to treat the PX4 Gazebo plugin as a ROS package.
+PX4 does not use this file, so copying it into PX4 is harmless, but excluding it keeps the PX4 tree cleaner.
+
 3. Register the plugin in the PX4 top-level `CMakeLists.txt`:
 
 ```cmake
