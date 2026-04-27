@@ -210,9 +210,8 @@ Rules:
 
 - UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...).
 - `spawn_pose` is expressed as `[x, y, z, roll, pitch, yaw]` in world coordinates and is used by `simulator_launcher.sh`.
-- `offboard` is per-robot. There is no shared offboard-defaults block.
 - Anchor ids are globally unique across all UGVs, and Tag ids are globally unique across all UAVs.
-- Pair topics remain `aItJ`, so `a1t2` is globally unique by construction.
+- Pair topics appear encoded as `aItJ` for anchor I and tag J, so `a1t2` is globally unique by construction.
 
 #### Layout parameters description
 
@@ -322,7 +321,13 @@ Example plugin block:
 </plugin>
 ```
 
-5. Rebuild PX4:
+5. (**OPTIONAL**) If you want to run the experiment with a custom world instead of the ones provided by PX4 (such as the ``walls_nlos.sdf`` file available in this repository in the ``worlds`` folder), make sure to copy your ``.sdf`` file to the following path:
+
+```text
+<PX4-Autopilot>/Tools/simulation/gz/worlds/
+```
+
+6. Rebuild PX4:
 
 ```bash
 cd <PX4-Autopilot>
@@ -519,9 +524,17 @@ You can point it to a different layout file with:
 export UWB_LAYOUT_FILE=/path/to/your_layout.yaml
 ```
 
-Additionally, `simulator_launcher.sh` makes a few default assumptions:
+Additionally, the experiment will use the default (empty) Gazebo world for the experiment, but you can use any other custom environment (p.e. the ones located in the `worlds/` folder) by setting:
 
-- the ROS 2 workspace can be auto-detected from the repository location
+```bash
+export GZ_WORLD=<your-world-name>
+```
+
+**NOTE**: before doing this, make sure you have included your custom world in the corresponding folder in PX4-Autopilot so that PX4 can find it. 
+
+Finally, `simulator_launcher.sh` also makes the following assumptions:
+
+- the ROS 2 workspace directory is either at $SCRIPT_DIR/../.. (when using the standalone simulator) or $SCRIPT_DIR/../../.. (when using the submodule in ``mr-radio-localization``)
 - PX4 lives at `~/PX4-Autopilot`
 - the QGroundControl AppImage is located in `~/Desktop` or `~/Downloads`
 

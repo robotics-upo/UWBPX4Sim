@@ -64,16 +64,11 @@ GZ_WORLD="${GZ_WORLD:-default}"
 UWB_LAYOUT_FILE="${UWB_LAYOUT_FILE:-$SCRIPT_DIR/config/uwb_layout.example.yaml}"
 LAYOUT_TOOL="$SCRIPT_DIR/tools/configure_uwb_layout.py"
 
-LAUNCH_LOCALIZATION=0
-RECORD_BAG=0
-
 print_usage() {
   cat <<EOF2
-Usage: $(basename "$0") [--localization] [--bag]
+Usage: $(basename "$0")
 
 Options:
-  --localization  Launch uwb_localization together with the simulator.
-  --bag           Start ros2 bag recording in tmux pane 1.3.
   (env) UWB_LAYOUT_FILE  Layout YAML with per-robot spawn_pose and sensor placement (default: config/uwb_layout.four_vehicle_example.yaml)
   (env) GZ_WORLD  Gazebo world name from PX4 Tools/simulation/gz/worlds (default: default)
   -h, --help           Show this help message.
@@ -83,12 +78,6 @@ EOF2
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --localization)
-        LAUNCH_LOCALIZATION=1
-        ;;
-      --bag)
-        RECORD_BAG=1
-        ;;
       -h|--help)
         print_usage
         exit 0
