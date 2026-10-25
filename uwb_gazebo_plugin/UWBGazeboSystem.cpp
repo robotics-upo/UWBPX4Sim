@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -593,6 +594,22 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 	std::unordered_map<std::string, std::string> seenTagIds;
 	std::unordered_map<std::string, std::string> seenAnchorIds;
 
+	// Vehicles are recognised by the UWB links they carry, not by model name,
+	// so any vehicle type from models/vehicles.yaml is picked up.
+	std::unordered_set<gz::sim::Entity> uwbModels;
+	ecm.Each<gz::sim::components::Name, gz::sim::components::Link>(
+	[&](const gz::sim::Entity &linkEntity,
+	const gz::sim::components::Name *linkName,
+	const gz::sim::components::Link *) -> bool
+	{
+		const std::string &linkBaseName = linkName->Data();
+		if (linkBaseName.rfind(tagPrefix_, 0) == 0 || linkBaseName.rfind(anchorPrefix_, 0) == 0)
+		{
+			uwbModels.insert(ecm.ParentEntity(linkEntity));
+		}
+		return true;
+	});
+
 	// Find all tag and anchor links
 	ecm.Each<gz::sim::components::Name, gz::sim::components::Link>(
 	[&](const gz::sim::Entity &linkEntity,
@@ -608,8 +625,8 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 		const std::string &modelName = parentNameComp->Data();
 		const std::string &linkBaseName = linkName->Data();
 
-		// Check for uwb_tag_* in x500_* models
-		if (modelName.rfind(modelTagPrefix_, 0) == 0 && linkBaseName.rfind(tagPrefix_, 0) == 0)
+		// Check for uwb_tag_* links
+		if (linkBaseName.rfind(tagPrefix_, 0) == 0)
 		{
 			std::string tagId;
 			if (!extractSensorId(linkBaseName, tagPrefix_, tagId))
@@ -635,8 +652,8 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 			}
 		}
 
-		// Check for uwb_anchor_* in r1_rover_* models
-		if (modelName.rfind(modelAnchorPrefix_, 0) == 0 && linkBaseName.rfind(anchorPrefix_, 0) == 0)
+		// Check for uwb_anchor_* links
+		if (linkBaseName.rfind(anchorPrefix_, 0) == 0)
 		{
 			std::string anchorId;
 			if (!extractSensorId(linkBaseName, anchorPrefix_, anchorId))
@@ -663,16 +680,15 @@ void UWBGazeboSystem::PreUpdate(const gz::sim::UpdateInfo &info,
 		}
 
 		// For wall-induced NLOS, consider only static map obstacles.
-		const bool isTagModel = (modelName.rfind(modelTagPrefix_, 0) == 0);
-		const bool isAnchorModel = (modelName.rfind(modelAnchorPrefix_, 0) == 0);
+		const bool isUwbModel = uwbModels.count(parentEntity) > 0;
 		const bool isGroundPlane = (modelName == "ground_plane");
-		if (!isTagModel && !isAnchorModel && !isGroundPlane)
+		if (!isUwbModel && !isGroundPlane)
 		{
 			obstacleLinks.emplace_back(linkEntity);
 		}
 
 		// Add a lightweight body-shadow penalty from the main vehicle bodies only.
-		if ((isTagModel || isAnchorModel) && linkBaseName == "base_link")
+		if (isUwbModel && linkBaseName == "base_link")
 		{
 			bodyShadowLinks.emplace_back(linkEntity);
 		}

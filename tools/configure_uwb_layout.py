@@ -3,13 +3,19 @@
 """Configure UWB anchor/tag layouts and generate per-robot Gazebo models.
 
 This script updates:
-  - models/custom_models/x500_<uav_id>/model.sdf + model.config
-  - models/custom_models/r1_rover_<ugv_id>/model.sdf + model.config
+  - models/custom_models/<type>_<id>/model.sdf + model.config, one per robot
   - ROS2/px4_sim_offboard/config/uwb_bridge.yaml
+
+The available vehicle types (x500, r1_rover, ...) are listed in
+models/vehicles.yaml. Their templates are normally read straight from the PX4
+checkout's Tools/simulation/gz/models, so sensor definitions always match the
+PX4/Gazebo version actually installed; only the UWB meshes (models/uwb_meshes/)
+and the generated UWB links/joints come from this repo.
 
 Layout input supports the multi-robot YAML schema:
 uavs:
   - id: 0
+    model: x500                      # optional, a uav type from models/vehicles.yaml
     spawn_pose: [x, y, z, roll, pitch, yaw]
     offboard: {... per-vehicle ROS/offboard parameters ...}
     tags:
@@ -17,6 +23,7 @@ uavs:
       - ...
 ugvs:
   - id: 0
+    model: r1_rover                  # optional, a ugv type from models/vehicles.yaml
     spawn_pose: [x, y, z, roll, pitch, yaw]
     offboard: {... per-vehicle ROS/offboard parameters ...}
     anchors:
@@ -31,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -39,8 +47,14 @@ from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 import yaml
 
 
-BASE_MODELS_DIRNAME = "base_models"
+DEFAULT_UWB_ROOT = Path(__file__).resolve().parents[1]
+VEHICLE_CATALOG_RELPATH = Path("models") / "vehicles.yaml"
+UWB_MESHES_DIRNAME = "uwb_meshes"
 CUSTOM_MODELS_DIRNAME = "custom_models"
+PX4_GZ_MODELS_SUBDIR = Path("Tools") / "simulation" / "gz" / "models"
+TAG_MESH_FILENAME = "uwb_tag_eliko.stl"
+ANCHOR_MESH_FILENAME = "uwb_anchor_eliko.stl"
+VEHICLE_ROLES = ("uav", "ugv")
 
 
 @dataclass(frozen=True)
@@ -60,8 +74,31 @@ class SpawnPose:
 
 
 @dataclass(frozen=True)
+class VehicleType:
+    """One entry of models/vehicles.yaml."""
+
+    name: str
+    role: str
+    autostart: int
+    # Exactly one of these is set: a model under PX4's gz models dir, or a
+    # template directory inside this repo (relative to the repo root).
+    px4_model: Optional[str] = None
+    template_dir: Optional[Path] = None
+    plugins_from: Optional[str] = None
+
+    def model_name(self, vehicle_id: int) -> str:
+        return f"{self.name}_{vehicle_id}"
+
+    def resolve_template_dir(self, px4_models_dir: Path, uwb_root: Path) -> Path:
+        if self.px4_model is not None:
+            return px4_models_dir / self.px4_model
+        return uwb_root / self.template_dir
+
+
+@dataclass(frozen=True)
 class VehicleLayout:
     id: int
+    model: VehicleType
     spawn_pose: SpawnPose
     sensors: List[SensorPlacement]
     offboard: dict[str, Any]
@@ -128,18 +165,11 @@ def iter_spawn_vehicles(layout: UwbLayout):
 
 def iter_spawn_assignments(layout: UwbLayout) -> Iterable[SpawnAssignment]:
     for instance_index, (vehicle_type, vehicle) in enumerate(iter_spawn_vehicles(layout), start=1):
-        if vehicle_type == "uav":
-            model_name = f"x500_{vehicle.id}"
-            autostart = 4001
-        else:
-            model_name = f"r1_rover_{vehicle.id}"
-            autostart = 4009
-
         yield SpawnAssignment(
             vehicle_type=vehicle_type,
             vehicle=vehicle,
-            model_name=model_name,
-            autostart=autostart,
+            model_name=vehicle.model.model_name(vehicle.id),
+            autostart=vehicle.model.autostart,
             instance_index=instance_index,
             target_system=instance_index + 1,
         )
@@ -262,10 +292,62 @@ def _parse_sensor_entries(
     return sensors
 
 
+def load_vehicle_catalog(catalog_path: Path) -> dict[str, VehicleType]:
+    data = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"{catalog_path} must map vehicle type names to their definitions.")
+
+    catalog: dict[str, VehicleType] = {}
+    for name, raw in data.items():
+        entry_name = f"{catalog_path.name}: {name}"
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name):
+            raise ValueError(f"{entry_name}: type names must be identifiers (letters, digits, '_').")
+        if not isinstance(raw, dict):
+            raise ValueError(f"{entry_name} must be a mapping.")
+
+        role = raw.get("role")
+        if role not in VEHICLE_ROLES:
+            raise ValueError(f"{entry_name}.role must be one of {', '.join(VEHICLE_ROLES)}.")
+        if ("px4_model" in raw) == ("template_dir" in raw):
+            raise ValueError(f"{entry_name} must set exactly one of 'px4_model' or 'template_dir'.")
+        if "autostart" not in raw:
+            raise ValueError(f"{entry_name} must include 'autostart'.")
+
+        catalog[name] = VehicleType(
+            name=name,
+            role=role,
+            autostart=_to_int(raw["autostart"], f"{entry_name}.autostart"),
+            px4_model=raw.get("px4_model"),
+            template_dir=Path(raw["template_dir"]) if "template_dir" in raw else None,
+            plugins_from=raw.get("plugins_from"),
+        )
+    return catalog
+
+
+def _resolve_vehicle_type(
+    raw_model: object, *, role: str, catalog: Mapping[str, VehicleType], field_name: str
+) -> VehicleType:
+    role_types = [vehicle_type for vehicle_type in catalog.values() if vehicle_type.role == role]
+    if raw_model is None:
+        if not role_types:
+            raise ValueError(f"No '{role}' vehicle type is defined in {VEHICLE_CATALOG_RELPATH}.")
+        # First one listed for the role is the default, so older layouts
+        # without `model:` keep generating x500 / r1_rover.
+        return role_types[0]
+
+    vehicle_type = catalog.get(raw_model) if isinstance(raw_model, str) else None
+    if vehicle_type is None or vehicle_type.role != role:
+        available = ", ".join(t.name for t in role_types) or "none"
+        raise ValueError(f"{field_name} must be a '{role}' type from {VEHICLE_CATALOG_RELPATH} ({available}).")
+    return vehicle_type
+
+
 def _parse_vehicle_layouts(
     raw_vehicles: object,
     *,
     field_name: str,
+    role: str,
+    catalog: Mapping[str, VehicleType],
     sensor_field: str,
     sensor_label: str,
     global_seen_sensor_ids: set[int],
@@ -301,6 +383,9 @@ def _parse_vehicle_layouts(
         vehicles.append(
             VehicleLayout(
                 id=vehicle_id,
+                model=_resolve_vehicle_type(
+                    raw_vehicle.get("model"), role=role, catalog=catalog, field_name=f"{entry_name}.model"
+                ),
                 spawn_pose=_parse_spawn_pose(raw_vehicle.get("spawn_pose"), f"{entry_name}.spawn_pose"),
                 sensors=sensors,
                 offboard=_to_mapping(raw_vehicle["offboard"], f"{entry_name}.offboard"),
@@ -311,7 +396,7 @@ def _parse_vehicle_layouts(
     return vehicles
 
 
-def load_layout(layout_path: Path) -> UwbLayout:
+def load_layout(layout_path: Path, catalog_path: Optional[Path] = None) -> UwbLayout:
     data = yaml.safe_load(layout_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Layout file must be a mapping/object.")
@@ -319,12 +404,15 @@ def load_layout(layout_path: Path) -> UwbLayout:
     if "uavs" not in data or "ugvs" not in data:
         raise ValueError("Layout file must include both 'uavs' and 'ugvs'.")
 
+    catalog = load_vehicle_catalog(catalog_path or DEFAULT_UWB_ROOT / VEHICLE_CATALOG_RELPATH)
     seen_tag_ids: set[int] = set()
     seen_anchor_ids: set[int] = set()
 
     uavs = _parse_vehicle_layouts(
         data["uavs"],
         field_name="uavs",
+        role="uav",
+        catalog=catalog,
         sensor_field="tags",
         sensor_label="tag",
         global_seen_sensor_ids=seen_tag_ids,
@@ -332,6 +420,8 @@ def load_layout(layout_path: Path) -> UwbLayout:
     ugvs = _parse_vehicle_layouts(
         data["ugvs"],
         field_name="ugvs",
+        role="ugv",
+        catalog=catalog,
         sensor_field="anchors",
         sensor_label="anchor",
         global_seen_sensor_ids=seen_anchor_ids,
@@ -357,10 +447,34 @@ def load_layout(layout_path: Path) -> UwbLayout:
     return layout
 
 
-def _find_block_bounds(text: str, prefix: str) -> BlockBounds:
+def _find_insertion_bounds(text: str) -> BlockBounds:
+    """Empty span right before the closing </model>, indented like base_link.
+
+    PX4's own templates carry no UWB block yet, so the generated one is
+    inserted as the model's last top-level element instead of replacing one.
+    """
+    base_link = re.search(
+        r'^(?P<indent>[ \t]*)<link name=["\']base_link["\']>\n(?P<inner_indent>[ \t]*)', text, flags=re.M
+    )
+    model_ends = list(re.finditer(r"^[ \t]*</model>", text, flags=re.M))
+    if not base_link or not model_ends:
+        raise RuntimeError("Could not find base_link and </model> to insert the UWB block.")
+
+    base_indent = base_link.group("indent")
+    inner_indent = base_link.group("inner_indent")
+    if inner_indent.startswith(base_indent) and len(inner_indent) > len(base_indent):
+        indent_step = inner_indent[len(base_indent) :]
+    else:
+        indent_step = "\t" if "\t" in base_indent else "  "
+
+    insert_at = model_ends[-1].start()
+    return BlockBounds(start=insert_at, end=insert_at, base_indent=base_indent, indent_step=indent_step)
+
+
+def _find_block_bounds(text: str, prefix: str) -> Optional[BlockBounds]:
     first_link = re.search(rf'^(?P<indent>[ \t]*)<link name="{re.escape(prefix)}_\d+">', text, flags=re.M)
     if not first_link:
-        raise RuntimeError(f"Could not find first link for prefix '{prefix}'.")
+        return None
 
     first_link_start = first_link.start()
     base_indent = first_link.group("indent")
@@ -566,6 +680,9 @@ def update_model_file(
 ) -> None:
     text = model_path.read_text(encoding="utf-8")
     bounds = _find_block_bounds(text, prefix)
+    inserting = bounds is None
+    if inserting:
+        bounds = _find_insertion_bounds(text)
 
     replacement = _gen_sensor_block(
         prefix=prefix,
@@ -575,6 +692,8 @@ def update_model_file(
         spec=spec,
         label=label,
     )
+    if inserting and replacement:
+        replacement = "\n" + replacement
 
     updated = text[: bounds.start] + replacement + text[bounds.end :]
     model_path.write_text(updated, encoding="utf-8")
@@ -638,10 +757,15 @@ def _copy_and_prepare_model_dir(
     template_dir: Path,
     target_dir: Path,
     target_model_name: str,
+    extra_meshes: Sequence[Path] = (),
 ) -> Path:
     if target_dir.exists():
         shutil.rmtree(target_dir)
     shutil.copytree(template_dir, target_dir)
+    meshes_dir = target_dir / "meshes"
+    meshes_dir.mkdir(exist_ok=True)
+    for mesh in extra_meshes:
+        shutil.copy2(mesh, meshes_dir / mesh.name)
 
     model_sdf = target_dir / "model.sdf"
     model_config = target_dir / "model.config"
@@ -652,7 +776,7 @@ def _copy_and_prepare_model_dir(
 
 def _tag_visual_spec(model_name: str) -> SensorVisualSpec:
     return SensorVisualSpec(
-        mesh_uri=f"model://{model_name}/meshes/uwb_tag_eliko.stl",
+        mesh_uri=f"model://{model_name}/meshes/{TAG_MESH_FILENAME}",
         mesh_scale=(1.0, 1.0, 1.0),
         mesh_color="0.96 0.55 0.13 1",
         collision_size=(0.052, 0.036, 0.030),
@@ -663,7 +787,7 @@ def _tag_visual_spec(model_name: str) -> SensorVisualSpec:
 
 def _anchor_visual_spec(model_name: str) -> SensorVisualSpec:
     return SensorVisualSpec(
-        mesh_uri=f"model://{model_name}/meshes/uwb_anchor_eliko.stl",
+        mesh_uri=f"model://{model_name}/meshes/{ANCHOR_MESH_FILENAME}",
         mesh_scale=(1.0, 1.0, 1.0),
         mesh_color="0.92 0.92 0.92 1",
         collision_size=(0.062, 0.046, 0.040),
@@ -904,13 +1028,20 @@ def main() -> None:
         help="Path to UWBPX4Sim directory (default: script's parent).",
     )
     parser.add_argument(
+        "--px4-dir",
+        type=Path,
+        default=Path(os.environ.get("PX4_DIR", Path.home() / "PX4-Autopilot")),
+        help="PX4-Autopilot checkout whose gz models are used as templates (default: $PX4_DIR or ~/PX4-Autopilot).",
+    )
+    parser.add_argument(
         "--skip-bridge",
         action="store_true",
         help="Do not regenerate the GZ-to-ROS2 bridge YAML files.",
     )
     args = parser.parse_args()
 
-    layout = load_layout(args.layout)
+    uwb_root = args.uwb_root.resolve()
+    layout = load_layout(args.layout, uwb_root / VEHICLE_CATALOG_RELPATH)
 
     if args.emit_spawn_layout:
         for assignment in iter_spawn_assignments(layout):
@@ -921,24 +1052,21 @@ def main() -> None:
         print(layout.world or "")
         return
 
-    uwb_root = args.uwb_root.resolve()
-
     models_dir = uwb_root / "models"
-    base_models_dir = models_dir / BASE_MODELS_DIRNAME
     custom_models_dir = models_dir / CUSTOM_MODELS_DIRNAME
-    uav_template_dir = base_models_dir / "x500_base"
-    uav_plugin_template_dir = base_models_dir / "x500"
-    ugv_template_dir = base_models_dir / "r1_rover"
+    px4_models_dir = args.px4_dir.resolve() / PX4_GZ_MODELS_SUBDIR
+    tag_mesh = models_dir / UWB_MESHES_DIRNAME / TAG_MESH_FILENAME
+    anchor_mesh = models_dir / UWB_MESHES_DIRNAME / ANCHOR_MESH_FILENAME
     bridge_yaml = uwb_root / "ROS2" / "px4_sim_offboard" / "config" / "uwb_bridge.yaml"
 
-    for path in (
-        uav_template_dir,
-        uav_plugin_template_dir,
-        ugv_template_dir,
-        uav_template_dir / "model.sdf",
-        uav_plugin_template_dir / "model.sdf",
-        ugv_template_dir / "model.sdf",
-    ):
+    # Only the vehicle types this layout actually uses need their templates.
+    used_types = {vehicle.model.name: vehicle.model for vehicle in [*layout.uavs, *layout.ugvs]}
+    required_paths = [tag_mesh, anchor_mesh]
+    for vehicle_type in used_types.values():
+        required_paths.append(vehicle_type.resolve_template_dir(px4_models_dir, uwb_root) / "model.sdf")
+        if vehicle_type.plugins_from is not None:
+            required_paths.append(px4_models_dir / vehicle_type.plugins_from / "model.sdf")
+    for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(f"Required template path not found: {path}")
     if not args.skip_bridge and not bridge_yaml.parent.exists():
@@ -947,41 +1075,28 @@ def main() -> None:
     custom_models_dir.mkdir(parents=True, exist_ok=True)
 
     generated_model_dirs: List[Path] = []
-    uav_plugin_blocks = _extract_plugin_blocks(uav_plugin_template_dir / "model.sdf")
-
-    for uav in layout.uavs:
-        model_name = f"x500_{uav.id}"
+    for vehicle_role, vehicle in iter_spawn_vehicles(layout):
+        vehicle_type = vehicle.model
+        model_name = vehicle_type.model_name(vehicle.id)
+        is_uav = vehicle_role == "uav"
         target_dir = custom_models_dir / model_name
         model_sdf = _copy_and_prepare_model_dir(
-            template_dir=uav_template_dir,
+            template_dir=vehicle_type.resolve_template_dir(px4_models_dir, uwb_root),
             target_dir=target_dir,
             target_model_name=model_name,
+            extra_meshes=(tag_mesh if is_uav else anchor_mesh,),
         )
         update_model_file(
             model_sdf,
-            prefix="uwb_tag",
-            sensors=uav.sensors,
-            spec=_tag_visual_spec(model_name),
-            label="Tag",
+            prefix="uwb_tag" if is_uav else "uwb_anchor",
+            sensors=vehicle.sensors,
+            spec=_tag_visual_spec(model_name) if is_uav else _anchor_visual_spec(model_name),
+            label="Tag" if is_uav else "Anchor",
         )
-        _append_plugin_blocks(model_sdf, uav_plugin_blocks)
-        generated_model_dirs.append(target_dir)
-
-    for ugv in layout.ugvs:
-        model_name = f"r1_rover_{ugv.id}"
-        target_dir = custom_models_dir / model_name
-        model_sdf = _copy_and_prepare_model_dir(
-            template_dir=ugv_template_dir,
-            target_dir=target_dir,
-            target_model_name=model_name,
-        )
-        update_model_file(
-            model_sdf,
-            prefix="uwb_anchor",
-            sensors=ugv.sensors,
-            spec=_anchor_visual_spec(model_name),
-            label="Anchor",
-        )
+        if vehicle_type.plugins_from is not None:
+            _append_plugin_blocks(
+                model_sdf, _extract_plugin_blocks(px4_models_dir / vehicle_type.plugins_from / "model.sdf")
+            )
         generated_model_dirs.append(target_dir)
 
     bridge_targets: List[Path] = []

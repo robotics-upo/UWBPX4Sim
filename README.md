@@ -4,7 +4,7 @@ A ready-to-use Ultra-Wideband simulator for relative localization of multi-robot
 
 It includes:
 
-- Modified Gazebo models for the `x500` UAV and the `r1_rover` UGV with onboard UWB tags / anchors
+- Modified Gazebo models for the `x500` UAV and the `r1_rover` UGV with onboard UWB tags / anchors (more vehicle types can be added in `models/vehicles.yaml`, see [Vehicle types](#vehicle-types))
 - World files and helper scripts for generating layouts and bridge configurations
 - Our custom Gazebo plugin `UWBGazeboPlugin`
 - The `setup_simulator.sh` guided setup script that installs the plugin/models into PX4 and syncs plugin parameters, in one command (see [Quick start: automated setup](#quick-start-automated-setup))
@@ -13,7 +13,8 @@ It includes:
 
 ## Repository layout
 
-- `models/base_models/`: template UAV and UGV models used as the generation inputs
+- `models/vehicles.yaml`: catalog of the vehicle types a layout can use (`x500`, `r1_rover`, ...) and the template each one is generated from
+- `models/uwb_meshes/`: UWB tag/anchor meshes added to the generated models
 - `models/custom_models/`: auto-generated per-robot UAV and UGV models with the desired UWB transceiver layouts
 - `ROS2/`: ROS 2 assets directory
 - `ROS2/px4_sim_offboard/`: ROS 2 package for the PX4/Gazebo bridge and offboard-side nodes
@@ -176,16 +177,28 @@ The experiment layout YAML is used to tell the simulator:
 From the repository root:
 
 ```bash
-python3 tools/configure_uwb_layout.py --layout config/demo_nlos.yaml
+python3 tools/configure_uwb_layout.py --layout config/demo_nlos.yaml --px4-dir ~/PX4-Autopilot   # --px4-dir defaults to $PX4_DIR or ~/PX4-Autopilot
 ```
 
 This generates:
 
-- one rover model per UGV, under `models/custom_models/r1_rover_<id>/`
-- one UAV model per UAV, under `models/custom_models/x500_<id>/`
+- one model per robot, under `models/custom_models/<type>_<id>/` (e.g. `x500_0`, `r1_rover_0`), where `<type>` is the robot's vehicle type
 - The GZ/ROS2 bridge description file for your customized setup in `ROS2/px4_sim_offboard/config/uwb_bridge.yaml`
 
 The script must be executed in order to 1) create a layout for the first time, 2) modify the sensor layout in any of the robots, or 3) add or remove robots from the simulation.
+
+#### Vehicle types
+
+The vehicle types a layout can use are listed in [`models/vehicles.yaml`](models/vehicles.yaml):
+
+| Type | Role | Template |
+| --- | --- | --- |
+| `x500` | `uav` (carries tags) | PX4's `x500_base`, plus the `<plugin>` blocks of PX4's `x500` |
+| `r1_rover` | `ugv` (carries anchors) | PX4's `r1_rover` |
+
+Templates are normally taken from your PX4 checkout (`<PX4-Autopilot>/Tools/simulation/gz/models`, via `px4_model`), so each robot's sensors and noise always match the PX4/Gazebo version installed. Only the UWB links and meshes are added on top.
+
+To add a vehicle type, add an entry to `models/vehicles.yaml` with its `role` (`uav` or `ugv`), its PX4 airframe (`autostart`), and either `px4_model` (a model PX4 ships) or `template_dir` (your own model directory in this repo, e.g. `models/templates/my_rover`, for vehicles PX4 doesn't ship). Then pick it per robot with `model:` in the layout, or from the setup GUI. Nothing else needs changing: the UWB plugin finds tags and anchors by their link names (`uwb_tag_<id>` / `uwb_anchor_<id>`), not by model name. A new *role* (anything that is neither a `uav` nor a `ugv`) would also need its own offboard node.
 
 Besides `uavs`/`ugvs`, the layout also accepts a top-level `world` field naming the Gazebo world to use -- either a custom one from `worlds/*.sdf`, or one PX4 already ships (e.g. `baylands`). `setup_simulator.sh` resolves it by name against PX4's own worlds directory after copying every custom world there (see [Quick start: automated setup](#quick-start-automated-setup)); an unrecognized name, or omitting the field, falls back to PX4's default world. `--world` overrides it.
 
@@ -279,7 +292,7 @@ ugvs:
 
 Rules:
 
-- UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...).
+- UAV and UGV ids are integers matching the Gazebo/PX4 model suffix (`x500_0`, `r1_rover_0`, ...). They must be unique among UAVs and among UGVs, whatever their vehicle type.
 - `spawn_pose` is expressed as `[x, y, z, roll, pitch, yaw]` in world coordinates and is used by `simulator_launcher.sh`.
 - Anchor ids are globally unique across all UGVs, and Tag ids are globally unique across all UAVs.
 - Pair topics appear encoded as `aItJ` for anchor I and tag J, so `a1t2` is globally unique by construction.
@@ -288,9 +301,10 @@ Rules:
 
 | Key | Meaning |
 | --- | --- |
-| `uavs` | List of UAV definitions. Each entry generates one `x500_<id>` model and one `uav_offboard_control_<id>` node. |
-| `ugvs` | List of UGV definitions. Each entry generates one `r1_rover_<id>` model and one `agv_offboard_control_<id>` node. |
+| `uavs` | List of UAV definitions. Each entry generates one `<type>_<id>` model (`x500_<id>` by default) and one `uav_offboard_control_<id>` node. |
+| `ugvs` | List of UGV definitions. Each entry generates one `<type>_<id>` model (`r1_rover_<id>` by default) and one `agv_offboard_control_<id>` node. |
 | `id` | Integer robot id. It becomes part of the model name, frame prefix, and node name. Example: `id: 0` produces `x500_0` or `r1_rover_0`. |
+| `model` | Optional. Vehicle type from [`models/vehicles.yaml`](models/vehicles.yaml) with the matching role. Defaults to the first type listed for that role (`x500` for UAVs, `r1_rover` for UGVs). |
 | `spawn_pose` | World-frame robot spawn pose as `[x, y, z, roll, pitch, yaw]`. The launcher uses this to spawn the robot in Gazebo. The offboard nodes also use it as the origin that maps local trajectory coordinates into world coordinates. |
 | `tags` | For UAVs only. List of mounted UWB tags. |
 | `anchors` | For UGVs only. List of mounted UWB anchors. |

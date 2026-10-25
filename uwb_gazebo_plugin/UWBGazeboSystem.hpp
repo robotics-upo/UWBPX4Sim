@@ -85,8 +85,6 @@ private:
 
   std::string tagPrefix_ = "uwb_tag";
   std::string anchorPrefix_ = "uwb_anchor";
-  std::string modelTagPrefix_ = "x500";
-  std::string modelAnchorPrefix_ = "r1_rover";
 
   std::default_random_engine rng_;
 

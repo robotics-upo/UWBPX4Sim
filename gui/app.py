@@ -58,11 +58,31 @@ DEFAULT_UGV_OFFBOARD = {
 }
 
 
-def validate_layout(layout: dict[str, Any]) -> list[str]:
+def load_vehicle_types(vehicles_file: Path) -> list[dict[str, str]]:
+    """[{name, role}] from models/vehicles.yaml, in file order (first per role is the default)."""
+    if not vehicles_file.is_file():
+        return []
+    with open(vehicles_file) as f:
+        data = yaml.safe_load(f) or {}
+    return [
+        {"name": name, "role": entry.get("role", "")}
+        for name, entry in data.items()
+        if isinstance(entry, dict)
+    ]
+
+
+def validate_layout(layout: dict[str, Any], vehicle_types: list[dict[str, str]]) -> list[str]:
     """Returns a list of human-readable errors; empty means valid."""
     errors: list[str] = []
     uavs = layout.get("uavs") or []
     ugvs = layout.get("ugvs") or []
+
+    roles = {t["name"]: t["role"] for t in vehicle_types}
+    for role, label, vehicles in (("uav", "UAV", uavs), ("ugv", "UGV", ugvs)):
+        for v in vehicles:
+            model = v.get("model")
+            if model is not None and roles.get(model) != role:
+                errors.append(f"{label} {v.get('id')}: model '{model}' is not a {role} type in models/vehicles.yaml.")
 
     uav_ids = [v.get("id") for v in uavs]
     if len(uav_ids) != len(set(uav_ids)):
@@ -102,6 +122,7 @@ def create_app(uwb_root: Path, selection_file: Path) -> Flask:
     params_file = uwb_root / "uwb_gazebo_plugin" / "params.yaml"
     presets_dir = uwb_root / "uwb_gazebo_plugin" / "presets"
     presets_dir.mkdir(parents=True, exist_ok=True)
+    vehicles_file = uwb_root / "models" / "vehicles.yaml"
 
     # (group label, [(key, default)]) -- defines both the canonical write
     # order/section comments for params.yaml and the ordered param list the
@@ -217,7 +238,7 @@ def create_app(uwb_root: Path, selection_file: Path) -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         layout = request.get_json(force=True, silent=True) or {}
-        errors = validate_layout(layout)
+        errors = validate_layout(layout, load_vehicle_types(vehicles_file))
         if errors:
             return jsonify({"error": " ".join(errors)}), 400
         if not layout.get("world"):
@@ -236,6 +257,10 @@ def create_app(uwb_root: Path, selection_file: Path) -> Flask:
     @app.get("/api/trajectories")
     def list_trajectories():
         return jsonify(sorted(p.name for p in trajectories_dir.glob("*.csv") if p.is_file()))
+
+    @app.get("/api/vehicle-types")
+    def list_vehicle_types():
+        return jsonify(load_vehicle_types(vehicles_file))
 
     # -- plugin params -----------------------------------------------------
 

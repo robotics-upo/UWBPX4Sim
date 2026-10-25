@@ -1,0 +1,30 @@
+# Vehicle types a layout can use. A layout entry picks one with `model: <name>`;
+# entries without `model` get the first type listed here for their role.
+#
+# Each type generates one Gazebo model per robot, named `<type>_<id>`
+# (e.g. x500_0, r1_rover_0), from a template plus the layout's UWB links.
+#
+#   role          uav -> listed under `uavs:`, carries UWB tags, driven by uav_offboard_control
+#                 ugv -> listed under `ugvs:`, carries UWB anchors, driven by agv_offboard_control
+#   px4_model     template taken from <PX4-Autopilot>/Tools/simulation/gz/models/<px4_model>.
+#                 Preferred: sensors and noise always match the PX4/Gazebo version installed.
+#   template_dir  alternative to px4_model for a vehicle PX4 doesn't ship: a model directory
+#                 in this repo (relative to the repo root), e.g. models/templates/my_rover.
+#   plugins_from  optional PX4 model whose <plugin> blocks are appended to the generated model
+#                 when the template has none (x500_base keeps them in the x500 wrapper model).
+#   autostart     PX4 airframe (PX4_SYS_AUTOSTART) the vehicle is launched with.
+#
+# Adding a type here is enough for model generation, launching, the setup GUI
+# and the UWB plugin (which finds tags/anchors by their link names, not by
+# model name). A new *role* would also need its own offboard node.
+
+x500:
+  role: uav
+  px4_model: x500_base
+  plugins_from: x500
+  autostart: 4001
+
+r1_rover:
+  role: ugv
+  px4_model: r1_rover
+  autostart: 4009

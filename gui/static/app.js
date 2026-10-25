@@ -45,6 +45,8 @@ const PARAM_UI = {
 };
 
 let trajectoryOptions = [];
+// [{name, role}] from models/vehicles.yaml; the first one per role is the default.
+let vehicleTypes = [];
 let layout = { uavs: [], ugvs: [], world: "" };
 
 // ---------------------------------------------------------------------------
@@ -109,10 +111,16 @@ function nextGlobalSensorId() {
   return i;
 }
 
+function typesForRole(kind) {
+  return vehicleTypes.filter((t) => t.role === kind);
+}
+
 function addVehicle(kind) {
   const list = kind === "uav" ? layout.uavs : layout.ugvs;
+  const defaultType = typesForRole(kind)[0];
   const vehicle = {
     id: nextId(list),
+    ...(defaultType ? { model: defaultType.name } : {}),
     spawn_pose: [0, 0, 0, 0, 0, 0],
     offboard: JSON.parse(JSON.stringify(kind === "uav" ? DEFAULT_UAV_OFFBOARD : DEFAULT_UGV_OFFBOARD)),
   };
@@ -186,6 +194,16 @@ function renderVehicleCard(kind, vehicle) {
   idInput.value = vehicle.id;
   idInput.addEventListener("change", () => (vehicle.id = parseInt(idInput.value, 10) || 0));
   header.appendChild(el("label", {}, [kind === "uav" ? "UAV id " : "UGV id ", idInput]));
+  const modelSelect = el("select");
+  const roleTypes = typesForRole(kind);
+  roleTypes.forEach((t) => {
+    const opt = el("option", { value: t.name, text: t.name });
+    // A vehicle without `model` uses the role's default (first) type.
+    if (t.name === (vehicle.model || roleTypes[0].name)) opt.selected = true;
+    modelSelect.appendChild(opt);
+  });
+  modelSelect.addEventListener("change", () => (vehicle.model = modelSelect.value));
+  header.appendChild(el("label", {}, ["model ", modelSelect]));
   const removeBtn = el("button", { class: "remove-vehicle", type: "button" });
   removeBtn.textContent = "Remove";
   removeBtn.addEventListener("click", () => {
@@ -252,6 +270,10 @@ async function refreshWorlds() {
 
 async function refreshTrajectories() {
   trajectoryOptions = await api("/api/trajectories");
+}
+
+async function refreshVehicleTypes() {
+  vehicleTypes = await api("/api/vehicle-types");
 }
 
 document.getElementById("add-uav").addEventListener("click", () => addVehicle("uav"));
@@ -456,7 +478,13 @@ document.getElementById("continue-setup").addEventListener("click", async () => 
 // ---------------------------------------------------------------------------
 
 (async function init() {
-  await Promise.all([refreshLayoutPresets(), refreshWorlds(), refreshTrajectories(), refreshParamPresets()]);
+  await Promise.all([
+    refreshLayoutPresets(),
+    refreshWorlds(),
+    refreshTrajectories(),
+    refreshVehicleTypes(),
+    refreshParamPresets(),
+  ]);
   renderVehicles();
   const data = await api("/api/params");
   paramGroups = data.groups;

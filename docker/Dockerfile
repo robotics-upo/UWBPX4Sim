@@ -21,8 +21,15 @@ RUN apt install libspdlog-dev libeigen3-dev -y
 
 RUN apt install git build-essential cmake genromfs python3-pip python3-venv -y
 
-# Install PX4 repository
-RUN git clone https://github.com/PX4/PX4-Autopilot.git --recursive
+# Install PX4 repository, pinned to a known-compatible commit. Floating on
+# main let the vehicle models (Tools/simulation/gz submodule) and the uORB
+# message definitions drift between images built on different days.
+# Keep in sync with px4_msgs below: bump both together, picking the
+# px4_msgs commit titled "Update to PX4 <this sha>".
+ARG PX4_COMMIT=d354c4e504d9f22096dd6e0172aab0b7a6b44beb
+RUN git clone https://github.com/PX4/PX4-Autopilot.git && \
+    cd PX4-Autopilot && git checkout ${PX4_COMMIT} && \
+    git submodule update --init --recursive
 # Set PX4 working directory
 RUN cd PX4-Autopilot/Tools/setup && ./ubuntu.sh --break-system-packages
 
@@ -45,9 +52,10 @@ ARG CACHEBUST=1
 RUN cd && mkdir -p ros2_ws/src && cd ros2_ws/src && git clone https://github.com/amartinezsilva/UWBPX4Sim --recursive
 SHELL ["/bin/bash", "-c"]
 
-# Pinned to known-compatible commits, not each repo's floating default
+# Pinned to known-compatible commits, not each repo's floating default.
+# px4_msgs must match PX4_COMMIT above (2e89230 = "Update to PX4 d354c4e5").
 RUN cd $HOME/ros2_ws/src && git clone https://github.com/PX4/px4_msgs.git && \
-    cd px4_msgs && git checkout 06608e367db26fe8708b866045423b67b3a8a6c7 && cd ~/ros2_ws
+    cd px4_msgs && git checkout 2e892300d8c20d3c29e198e324a10854b40ab8d3 && cd ~/ros2_ws
 RUN cd $HOME/ros2_ws/src && git clone https://github.com/PX4/px4_ros_com && \
     cd px4_ros_com && git checkout 86e9aeb20e55a4673fa8a9f1c29ea06a6c5ad1af && cd ~/ros2_ws
 

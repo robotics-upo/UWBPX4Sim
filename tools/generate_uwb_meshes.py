@@ -155,9 +155,9 @@ def main() -> None:
     args = parser.parse_args()
 
     uwb_root = args.uwb_root.resolve()
-    base_models_dir = uwb_root / "models" / "base_models"
-    anchor_out = base_models_dir / "r1_rover" / "meshes" / "uwb_anchor_eliko.stl"
-    tag_out = base_models_dir / "x500_base" / "meshes" / "uwb_tag_eliko.stl"
+    meshes_dir = uwb_root / "models" / "uwb_meshes"
+    anchor_out = meshes_dir / "uwb_anchor_eliko.stl"
+    tag_out = meshes_dir / "uwb_tag_eliko.stl"
 
     for out in (anchor_out, tag_out):
         out.parent.mkdir(parents=True, exist_ok=True)

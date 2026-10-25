@@ -387,9 +387,9 @@ if (( SKIP_MODELS )); then
 else
   log_step "Step 1/6: Generating models + bridge config from $(basename "$LAYOUT_FILE")"
   if (( DRY_RUN )); then
-    log_info "[DRY-RUN] python3 tools/configure_uwb_layout.py --layout \"$LAYOUT_FILE\" --uwb-root \"$SCRIPT_DIR\""
+    log_info "[DRY-RUN] python3 tools/configure_uwb_layout.py --layout \"$LAYOUT_FILE\" --uwb-root \"$SCRIPT_DIR\" --px4-dir \"$PX4_DIR\""
   else
-    python3 "$SCRIPT_DIR/tools/configure_uwb_layout.py" --layout "$LAYOUT_FILE" --uwb-root "$SCRIPT_DIR"
+    python3 "$SCRIPT_DIR/tools/configure_uwb_layout.py" --layout "$LAYOUT_FILE" --uwb-root "$SCRIPT_DIR" --px4-dir "$PX4_DIR"
     log_ok "Generated models/custom_models/ and ROS2/px4_sim_offboard/config/uwb_bridge.yaml"
   fi
 
