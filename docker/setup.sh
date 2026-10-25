@@ -61,7 +61,13 @@ CONTAINER_NAME="uwbpx4sim"
 # inside the very same container left it running. Trapping SIGTERM here
 # makes PID 1 actually responsive to that signal.
 PID1_IDLE_CMD=(bash -c 'trap "exit 0" TERM; while true; do sleep 3600 & wait "$!"; done')
-MIN_FREE_GB=35   # a build has failed mid-export with as much as 24-28GB free in practice;
+# Under WSL2 (Docker Desktop on Windows), layer on the override that routes
+# Gazebo's OpenGL to the NVIDIA GPU via Mesa's d3d12 driver -- see
+# docker-compose.wsl.yml. Exported so every `docker compose` below picks it up.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  export COMPOSE_FILE="docker-compose.yml:docker-compose.wsl.yml"
+fi
+MIN_FREE_GB=35  # a build has failed mid-export with as much as 24-28GB free in practice;
                  # successful builds in the same environment needed ~40GB+ of real headroom
 
 # Log helpers keep the literal "[INFO]"/"[WARN]"/etc. tags uncolored and

@@ -1,0 +1,6 @@
+# Shell scripts, Python and the Dockerfile run inside Linux (the container or
+# WSL), where CRLF breaks shebangs ("exec /entrypoint.sh: no such file or
+# directory"). Keep them LF even on Windows checkouts with core.autocrlf=true.
+*.sh        text eol=lf
+*.py        text eol=lf
+Dockerfile  text eol=lf
