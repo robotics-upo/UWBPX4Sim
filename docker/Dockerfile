@@ -21,12 +21,13 @@ RUN apt install libspdlog-dev libeigen3-dev -y
 
 RUN apt install git build-essential cmake genromfs python3-pip python3-venv -y
 
-# Install PX4 repository, pinned to a known-compatible commit. Floating on
-# main let the vehicle models (Tools/simulation/gz submodule) and the uORB
-# message definitions drift between images built on different days.
-# Keep in sync with px4_msgs below: bump both together, picking the
-# px4_msgs commit titled "Update to PX4 <this sha>".
-ARG PX4_COMMIT=d354c4e504d9f22096dd6e0172aab0b7a6b44beb
+# Install PX4 repository, pinned to the stable release v1.17.0 (the tag's
+# commit, so a moved tag can't change the build). Floating on main let the
+# vehicle models (Tools/simulation/gz submodule) and the uORB message
+# definitions drift between images built on different days.
+# Keep in sync with px4_msgs below: bump both together, using the px4_msgs
+# release/<x.y> branch whose message definitions match the PX4 release.
+ARG PX4_COMMIT=d6f12ad1c4f70ad3230afd7d86e971421e02fef4
 RUN git clone https://github.com/PX4/PX4-Autopilot.git && \
     cd PX4-Autopilot && git checkout ${PX4_COMMIT} && \
     git submodule update --init --recursive
@@ -60,9 +61,13 @@ RUN cd && mkdir -p ros2_ws/src && cd ros2_ws/src && git clone https://github.com
 SHELL ["/bin/bash", "-c"]
 
 # Pinned to known-compatible commits, not each repo's floating default.
-# px4_msgs must match PX4_COMMIT above (2e89230 = "Update to PX4 d354c4e5").
+# px4_msgs: head of release/1.17, whose message definitions are identical to
+# PX4 v1.17.0's. px4_ros_com has no release/1.17 branch; 86e9aeb (main) builds
+# against these messages. Don't move px4_msgs to main on its own: main renamed
+# SensorGps to SensorGnss, which px4_ros_com's examples don't build against
+# (https://github.com/PX4/px4_ros_com/issues/236).
 RUN cd $HOME/ros2_ws/src && git clone https://github.com/PX4/px4_msgs.git && \
-    cd px4_msgs && git checkout 2e892300d8c20d3c29e198e324a10854b40ab8d3 && cd ~/ros2_ws
+    cd px4_msgs && git checkout 86d8239e962f6939e05c3737784f60c02fa884db && cd ~/ros2_ws
 RUN cd $HOME/ros2_ws/src && git clone https://github.com/PX4/px4_ros_com && \
     cd px4_ros_com && git checkout 86e9aeb20e55a4673fa8a9f1c29ea06a6c5ad1af && cd ~/ros2_ws
 
