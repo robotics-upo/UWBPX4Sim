@@ -31,7 +31,14 @@ RUN git clone https://github.com/PX4/PX4-Autopilot.git && \
     cd PX4-Autopilot && git checkout ${PX4_COMMIT} && \
     git submodule update --init --recursive
 # Set PX4 working directory
-RUN cd PX4-Autopilot/Tools/setup && ./ubuntu.sh --break-system-packages
+# ----TEMPORARY WORKAROUND -----
+# PX4's requirements.txt leaves pandas unbounded, and pandas >= 3.1 needs
+# numpy >= 2 -- pip then tries to replace Debian's numpy 1.26 (which ROS Jazzy
+# is built against) and fails ("RECORD file not found"). The constraint keeps
+# Debian's numpy and makes pip pick a pandas that works with it.
+RUN echo "numpy<2" > /tmp/pip-constraints.txt && \
+    cd PX4-Autopilot/Tools/setup && \
+    PIP_CONSTRAINT=/tmp/pip-constraints.txt ./ubuntu.sh --break-system-packages
 
 # Install the Micro XRCE-DDS Agent
 RUN cd /root/ && git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
